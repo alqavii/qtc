@@ -1,0 +1,714 @@
+from __future__ import annotations
+import argparse
+import json
+import os
+import shutil
+from pathlib import Path
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from app.config.environments import EnvironmentConfig
+from app.services.auth import auth_manager
+from app.telemetry import subscribe_activity
+
+
+ROOT = Path(__file__).parents[2]
+DATA_DIR = ROOT / "data"
+TEAM_ROOT = DATA_DIR / "team"
+REGISTRY = ROOT / "team_registry.yaml"
+STRAT_ROOT = ROOT / "external_strategies"
+
+
+def _slugify(name: str) -> str:
+    s = name.strip().lower()
+    out = []
+    prev_dash = False
+    for ch in s:
+        if ch.isalnum():
+            out.append(ch)
+            prev_dash = False
+        else:
+            if not prev_dash:
+                out.append("-")
+                prev_dash = True
+    slug = "".join(out).strip("-")
+    return slug or "team"
+
+
+def _load_registry() -> Dict[str, Any]:
+    import yaml
+
+    data: Dict[str, Any] = {}
+    if REGISTRY.exists():
+        data = yaml.safe_load(REGISTRY.read_text(encoding="utf-8")) or {}
+    teams = data.get("teams")
+    if not isinstance(teams, list):
+        teams = []
+    data["teams"] = teams
+    return data
+
+
+def _save_registry(reg: Dict[str, Any]) -> None:
+    import yaml
+
+    REGISTRY.write_text(yaml.safe_dump(reg, sort_keys=False), encoding="utf-8")
+
+
+def _format_money(value: Any) -> str:
+    try:
+        return f"${float(value):,.2f}"
+    except Exception:
+        return str(value)
+
+
+def _sync_strategy_file(team_id: str, source: Path) -> Path:
+    """Copy strategy.py from source into external_strategies/<team_id>."""
+    from shutil import copy2
+
+    source = Path(source)
+    if not source.exists():
+        raise FileNotFoundError(f"Strategy source {source} not found")
+
+    STRAT_ROOT.mkdir(parents=True, exist_ok=True)
+    dest = STRAT_ROOT / team_id
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    if source.is_file():
+        candidate = source if source.name == "strategy.py" else None
+    else:
+        candidate = (
+            (source / "strategy.py") if (source / "strategy.py").exists() else None
+        )
+        if candidate is None:
+            matches = list(source.rglob("strategy.py"))
+            candidate = matches[0] if matches else None
+
+    if candidate is None:
+        raise FileNotFoundError(f"strategy.py not found in {source}")
+
+    copy2(candidate, dest / "strategy.py")
+    return dest
+
+
+def _update_registry_repo_dir(team_id: str, repo_dir: Path) -> None:
+    reg = _load_registry()
+    teams = reg.setdefault("teams", [])
+    for entry in teams:
+        if entry.get("team_id") == team_id:
+            entry["repo_dir"] = str(repo_dir)
+            break
+    else:
+        teams.append(
+            {
+                "team_id": team_id,
+                "repo_dir": str(repo_dir),
+                "entry_point": "strategy:Strategy",
+                "initial_cash": 100000,
+                "run_24_7": False,
+            }
+        )
+    reg["teams"] = teams
+    _save_registry(reg)
+
+
+def _to_decimal(value: Any) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return Decimal("0")
+        try:
+            return Decimal(stripped)
+        except InvalidOperation:
+            return Decimal("0")
+    if isinstance(value, dict):
+        for key in ("__root__", "value", "amount"):
+            if key in value:
+                try:
+                    return _to_decimal(value[key])
+                except Exception:
+                    continue
+    return Decimal("0")
+
+
+def _tail_jsonl(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if not path or not path.exists():
+        return None
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size <= 0:
+                return None
+            read = min(16384, size)
+            f.seek(size - read)
+            chunk = f.read().decode("utf-8", errors="ignore")
+        lines = [ln for ln in chunk.splitlines() if ln.strip()]
+        for line in reversed(lines):
+            try:
+                return json.loads(line)
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def view_teams() -> None:
+    # List teams from data folder and show keys if present
+    teams: List[str] = []
+    if TEAM_ROOT.exists():
+        teams = [p.name for p in TEAM_ROOT.iterdir() if p.is_dir()]
+    # Load keys map
+    try:
+        key_map: Dict[str, str] = json.loads(
+            (DATA_DIR / "api_keys.json").read_text(encoding="utf-8")
+        )
+    except Exception:
+        key_map = {}
+    if not teams and not key_map:
+        print("No teams found.")
+        return
+    for tid in sorted(set(list(teams) + list(key_map.keys()))):
+        key = key_map.get(tid, "<no key>")
+        print(f"{tid}: {key}")
+
+
+def add_team(
+    name: str,
+    initial_cash: Decimal = Decimal(10000),
+    *,
+    repo_path: str | None = None,
+    git_url: str | None = None,
+    run_24_7: bool = False,
+) -> None:
+    team_id = _slugify(name)
+    initial_cash = Decimal(initial_cash)
+    # Ensure data dirs
+    (TEAM_ROOT / team_id / "portfolio").mkdir(parents=True, exist_ok=True)
+    (TEAM_ROOT / team_id).mkdir(parents=True, exist_ok=True)
+    # Ensure API key
+    key = auth_manager.generateKey(team_id)
+    auth_manager._maybe_reload()
+    # Update registry: prefer Git URL by default; fall back to local path if provided
+    reg = _load_registry()
+    teams = reg.setdefault("teams", [])
+    # Remove any existing entry with same id
+    teams = [t for t in teams if t.get("team_id") != team_id]
+    reg["teams"] = teams
+    entry: Dict[str, Any] = {
+        "team_id": team_id,
+        "entry_point": "strategy:Strategy",
+        "initial_cash": float(initial_cash),
+        "run_24_7": bool(run_24_7),
+    }
+    if repo_path:
+        try:
+            dest = _sync_strategy_file(team_id, Path(repo_path).resolve())
+            entry["repo_dir"] = str(dest)
+        except Exception as exc:
+            print(f"Warning: unable to sync local strategy for '{team_id}': {exc}")
+    else:
+        entry["git_url"] = git_url or "https://github.com/org/strategy.git"
+        entry["branch"] = "main"
+    teams.append(entry)
+    reg["teams"] = teams
+    _save_registry(reg)
+
+    add_money(name, Decimal(initial_cash))
+    print(f"Added team '{name}' as '{team_id}'. Key: {key}")
+
+
+def remove_team(name_or_id: str, *, purge_data: bool = True) -> None:
+    team_id = _slugify(name_or_id)
+    # Remove data dir
+    if purge_data and (TEAM_ROOT / team_id).exists():
+        shutil.rmtree(TEAM_ROOT / team_id)
+    # Remove key
+    try:
+        key_file = DATA_DIR / "api_keys.json"
+        keys = (
+            json.loads(key_file.read_text(encoding="utf-8"))
+            if key_file.exists()
+            else {}
+        )
+        if team_id in keys:
+            del keys[team_id]
+            key_file.write_text(json.dumps(keys, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    # Remove from registry
+    reg = _load_registry()
+    teams = reg.get("teams", [])
+    teams = [t for t in teams if t.get("team_id") != team_id]
+    reg["teams"] = teams
+    _save_registry(reg)
+    # Remove strategy working directory
+    try:
+        strat_dir = STRAT_ROOT / team_id
+        if strat_dir.exists():
+            shutil.rmtree(strat_dir)
+    except Exception:
+        pass
+    print(f"Removed team '{team_id}'.")
+
+
+def add_money(name_or_id: str, amount: Decimal) -> None:
+    team_id = _slugify(name_or_id)
+    portfolio_dir = TEAM_ROOT / team_id / "portfolio"
+    had_history = portfolio_dir.exists()
+    portfolio_dir.mkdir(parents=True, exist_ok=True)
+
+    json_files = (
+        sorted([p for p in portfolio_dir.glob("*.jsonl") if p.is_file()])
+        if had_history
+        else []
+    )
+    last_file: Optional[Path] = json_files[-1] if json_files else None
+    last_snapshot = _tail_jsonl(last_file) if last_file else None
+    if last_snapshot is None:
+        last_snapshot = {
+            "team_id": team_id,
+            "cash": 0,
+            "market_value": 0,
+            "positions": {},
+        }
+    else:
+        last_snapshot = dict(last_snapshot)
+
+    positions_value = Decimal("0")
+    positions = last_snapshot.get("positions", {})
+    if isinstance(positions, dict):
+        for info in positions.values():
+            if isinstance(info, dict):
+                positions_value += _to_decimal(info.get("value"))
+
+    base_cash = _to_decimal(last_snapshot.get("cash"))
+    base_market = _to_decimal(last_snapshot.get("market_value"))
+    if base_market == Decimal("0"):
+        base_market = _to_decimal(last_snapshot.get("portfolio_value"))
+    if base_market == Decimal("0"):
+        base_market = base_cash + positions_value
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    new_cash = base_cash + amount
+    new_market_value = base_market + amount
+
+    new_snapshot = dict(last_snapshot)
+    new_snapshot["team_id"] = team_id
+    new_snapshot["timestamp"] = now.isoformat()
+    new_snapshot["cash"] = float(new_cash)
+    new_snapshot["market_value"] = float(new_market_value)
+    # Do not annotate adjustments; act like a direct portfolio update
+
+    today_file = portfolio_dir / f"{now.date().isoformat()}.jsonl"
+    portfolio_dir.mkdir(parents=True, exist_ok=True)
+    with open(today_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(new_snapshot, default=str) + "\n")
+
+    print(
+        f"Credited ${float(amount):,.2f} to team '{team_id}'. Snapshot appended to {today_file}."
+    )
+    if last_file and last_file != today_file:
+        print(f"Previous snapshot source: {last_file}")
+
+
+def _manual_trade(
+    name_or_id: str,
+    symbol: str,
+    quantity: Decimal,
+    *,
+    side: str = "buy",
+    price: float | None = None,
+) -> None:
+    """Place a manual buy/sell for a team, identical to a strategy-driven trade.
+
+    - Sends order to Alpaca when broker credentials are configured.
+    - Updates local portfolio state and saves trade + snapshot to disk.
+    """
+    from decimal import Decimal as D
+    from app.models.teams import Team, Strategy as StratModel, Portfolio, Position
+    from app.models.trading import TradeRequest
+    from app.services.trade_executor import trade_executor
+    from app.adapters.ticker_adapter import TickerAdapter
+
+    team_id = _slugify(name_or_id)
+
+    # Load last snapshot to reconstruct a Team object
+    portfolio_dir = TEAM_ROOT / team_id / "portfolio"
+    last_file = None
+    if portfolio_dir.exists():
+        files = sorted([p for p in portfolio_dir.glob("*.jsonl") if p.is_file()])
+        last_file = files[-1] if files else None
+    last = _tail_jsonl(last_file)
+
+    cash = D("0")
+    positions: Dict[str, Position] = {}
+    if isinstance(last, dict):
+        try:
+            cash = D(str(last.get("cash", "0")))
+        except Exception:
+            cash = D("0")
+        pos = last.get("positions") or {}
+        if isinstance(pos, dict):
+            for sym, info in pos.items():
+                try:
+                    positions[sym] = Position(
+                        symbol=sym,
+                        quantity=D(str(info.get("quantity", "0"))),
+                        side=str(info.get("side", "buy")),  # type: ignore
+                        avgCost=D(str(info.get("avg_cost", info.get("avgCost", "0")))),
+                        costBasis=D("0"),
+                    )
+                except Exception:
+                    continue
+
+    team = Team(
+        name=team_id,
+        strategy=StratModel(name="manual", repoPath=None, entryPoint=None, params={}),
+        portfolio=Portfolio(base="USD", freeCash=cash, positions=positions),
+    )
+
+    sym = symbol.upper()
+    px: D
+    if price is not None:
+        px = D(str(price))
+    else:
+        bars = TickerAdapter.fetchBasic([sym])
+        found = None
+        for b in bars:
+            if b.ticker.upper() == sym:
+                found = b
+                break
+        if not found:
+            print(f"Failed to resolve live price for {sym}; provide --price")
+            return
+        px = D(str(found.close))
+
+    req = TradeRequest(
+        team_id=team_id,
+        symbol=sym,
+        side="buy" if side == "buy" else "sell",
+        quantity=D(str(quantity)),
+        price=px,
+        order_type="market",
+    )
+
+    ok, msg = trade_executor.execute(team, req, current_prices={sym: px})
+    print(msg)
+
+
+def pullstrat(name_or_id: str) -> None:
+    """Pull/update a team's strategy repo and copy strategy.py into external_strategies."""
+    from app.loaders import git_fetch as gf
+
+    gf.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    team_id = _slugify(name_or_id)
+    reg = _load_registry()
+    team = None
+    for item in reg.get("teams", []):
+        if item.get("team_id") == team_id:
+            team = item
+            break
+    if not team:
+        print(f"Team '{team_id}' not found in registry.")
+        return
+    url = team.get("git_url")
+    if not url:
+        print(f"Team '{team_id}' has no git_url in registry.")
+        return
+    ref = team.get("branch") or team.get("ref") or team.get("sha") or "main"
+    try:
+        sha = gf._ls_remote_head(url, ref)
+        dest = gf.CACHE_DIR / team_id
+        # Clear any legacy hashed checkout directories for this team
+        for extra in gf.CACHE_DIR.glob(f"{team_id}@*"):
+            if extra.is_dir():
+                shutil.rmtree(extra, ignore_errors=True)
+        gf.shallow_clone_at_sha(url, sha, dest)
+        # sync strategy.py into external_strategies
+        final_dir = _sync_strategy_file(team_id, dest)
+        _update_registry_repo_dir(team_id, final_dir)
+        # Remove any accidental hashed strategy folders under external_strategies
+        for extra in STRAT_ROOT.glob(f"{team_id}@*"):
+            if extra.is_dir():
+                shutil.rmtree(extra, ignore_errors=True)
+        state = gf.load_state()
+        state[team_id] = {"sha": sha, "repo_dir": str(dest)}
+        gf.save_state(state)
+        print(f"Pulled strategy for '{team_id}' -> {final_dir} (sha {sha[:12]})")
+    except Exception as e:
+        print(f"Failed to pull strategy for '{team_id}': {e}")
+
+
+def check_status(*, show_positions: bool = False) -> None:
+    """Display the runtime status emitted by the orchestrator."""
+    cfg = EnvironmentConfig(os.getenv("QTC_ENV", "development"))
+    status_path = cfg.get_data_path("runtime/status.json")
+    if not status_path.exists():
+        print("Runtime status not found. Start the trading engine to populate it.")
+        reg = _load_registry()
+        teams = [
+            entry.get("team_id")
+            for entry in reg.get("teams", [])
+            if entry.get("team_id")
+        ]
+        if teams:
+            print("Registered teams:")
+            for tid in teams:
+                print(f"  - {tid}")
+        return
+
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Failed to read runtime status: {exc}")
+        return
+
+    teams = data.get("teams") or []
+    print(f"Last heartbeat: {data.get('timestamp', 'unknown')}")
+    if "running" in data:
+        print(f"Engine running: {bool(data.get('running'))}")
+    symbols = sorted(data.get("symbols") or [])
+    if symbols:
+        print(f"Latest symbols: {', '.join(symbols)}")
+    bar_count = data.get("bar_count")
+    if bar_count is not None:
+        print(f"Bars processed: {bar_count}")
+
+    if not teams:
+        print("No team activity recorded yet.")
+        return
+
+    header = f"{'Team':<16}{'Active':<8}{'Last Snapshot':<22}{'Market Value':<18}{'Last Trade'}"
+    print(header)
+    print("-" * len(header))
+
+    for entry in teams:
+        team_id = entry.get("team_id", "?")
+        active = "yes" if entry.get("active") else "no"
+        last_snapshot = entry.get("last_snapshot", "n/a")
+        market_value = _format_money(entry.get("market_value"))
+        last_trade = entry.get("last_trade")
+        if isinstance(last_trade, dict):
+            lt_piece = f"{last_trade.get('timestamp', 'n/a')} {last_trade.get('side', '?')} {last_trade.get('symbol', '')}".strip()
+        else:
+            lt_piece = "n/a"
+        print(
+            f"{team_id:<16}{active:<8}{last_snapshot:<22}{market_value:<18}{lt_piece}"
+        )
+        if entry.get("error"):
+            print(f"    warning: {entry['error']}")
+        if show_positions:
+            for pos in entry.get("positions") or []:
+                sym = pos.get("symbol", "?")
+                qty = pos.get("quantity", 0)
+                side = pos.get("side", "?")
+                value = _format_money(pos.get("value"))
+                print(f"    {sym}: {qty} {side} ({value})")
+
+    global_info = data.get("global")
+    if isinstance(global_info, dict):
+        print("\nGlobal portfolio:")
+        print(f"  Timestamp: {global_info.get('timestamp', 'n/a')}")
+        print(f"  Source: {global_info.get('source', 'unknown')}")
+        print(f"  Market Value: {_format_money(global_info.get('market_value'))}")
+        print(f"  Cash: {_format_money(global_info.get('cash'))}")
+        if show_positions:
+            for pos in global_info.get("positions") or []:
+                sym = pos.get("symbol", "?")
+                qty = pos.get("quantity", 0)
+                side = pos.get("side", "?")
+                value = _format_money(pos.get("value"))
+                print(f"    {sym}: {qty} {side} ({value})")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Team management CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("viewteams", help="List teams and their keys")
+
+    ap = sub.add_parser(
+        "addteam", help="Add a new team (creates data/, key, registry entry)"
+    )
+    ap.add_argument("name", help="Team name, e.g. 'Team Blue'")
+    ap.add_argument(
+        "--repo",
+        dest="repo_path",
+        default=None,
+        help="Local path to strategy folder (if not using Git)",
+    )
+    ap.add_argument(
+        "--git",
+        dest="git_url",
+        default=None,
+        help="Git URL for the team's strategy (default: https://github.com/org/strategy.git)",
+    )
+    ap.add_argument("--cash", dest="initial_cash", type=int, default=100000)
+    ap.add_argument(
+        "--run-24-7",
+        dest="run_24_7",
+        action="store_true",
+        help="Mark the team to run outside regular market hours",
+    )
+
+    rp = sub.add_parser("removeteam", help="Remove an existing team")
+    rp.add_argument("name", help="Team name or id to remove")
+    rp.add_argument(
+        "--keep-data", action="store_true", help="Keep data/team/<id> directory"
+    )
+
+    mp = sub.add_parser("addmoney", help="Credit cash to a team for the latest tick")
+    mp.add_argument("name", help="Team name or id")
+    mp.add_argument("amount", type=Decimal, help="Amount (USD) to credit")
+
+    # Manual trade commands (act as if team placed them)
+    bp = sub.add_parser(
+        "buy",
+        help="Place a buy for team: buy <team> <symbol> <quantity> [--price]",
+    )
+    bp.add_argument("name", help="Team name or id")
+    bp.add_argument("symbol", help="Ticker symbol (e.g., BTC, AAPL)")
+    bp.add_argument("quantity", type=Decimal)
+    bp.add_argument("--price", type=float, default=None)
+
+    sp = sub.add_parser(
+        "sell",
+        help="Place a sell for team: sell <team> <symbol> <quantity> [--price]",
+    )
+    sp.add_argument("name", help="Team name or id")
+    sp.add_argument("symbol", help="Ticker symbol (e.g., BTC, AAPL)")
+    sp.add_argument("quantity", type=Decimal)
+    sp.add_argument("--price", type=float, default=None)
+
+    vt = sub.add_parser("viewtrade", help="Show the last trade made for a team")
+    vt.add_argument("name", help="Team name or id")
+
+    pp = sub.add_parser(
+        "pullstrat", help="Pull/update a team's strategy from the registry"
+    )
+    pp.add_argument("name", help="Team name or id")
+
+    ar = sub.add_parser(
+        "addrepo", help="Set or update a team's git repo in team_registry.yaml"
+    )
+    ar.add_argument("name", help="Team name or id")
+    ar.add_argument("url", help="Git URL of the strategy repo")
+    ar.add_argument("--branch", default="main")
+
+    sub.add_parser("checkdaily", help="Run daily team sanity checks")
+
+    # Live activity feed (terminal streaming)
+    sub.add_parser("viewactivity", help="Stream live activity; Ctrl+C to stop")
+
+    cs = sub.add_parser("checkstatus", help="Show live strategy runtime status")
+    cs.add_argument(
+        "--details",
+        action="store_true",
+        help="Include position-level details for each team",
+    )
+
+    args = p.parse_args()
+    if args.cmd == "viewteams":
+        view_teams()
+    elif args.cmd == "addteam":
+        add_team(
+            args.name,
+            repo_path=args.repo_path,
+            git_url=args.git_url,
+            initial_cash=args.initial_cash,
+            run_24_7=args.run_24_7,
+        )
+    elif args.cmd == "removeteam":
+        remove_team(args.name, purge_data=not args.keep_data)
+    elif args.cmd == "viewtrade":
+        # Tail data/team/<id>/trades.jsonl and print last line prettily
+        tid = _slugify(args.name)
+        path = TEAM_ROOT / tid / "trades.jsonl"
+        if not path.exists():
+            print(f"No trades found for team '{tid}'.")
+            return
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                read = min(65536, size)
+                f.seek(size - read)
+                chunk = f.read().decode("utf-8", errors="ignore")
+            lines = [ln for ln in chunk.splitlines() if ln.strip()]
+            last = lines[-1]
+            obj = json.loads(last)
+            print(
+                {
+                    "timestamp": obj.get("timestamp"),
+                    "symbol": obj.get("symbol"),
+                    "side": obj.get("side"),
+                    "quantity": obj.get("quantity"),
+                    "price": obj.get("price"),
+                    "status": obj.get("status") or obj.get("success"),
+                    "message": obj.get("message"),
+                    "broker_order_id": obj.get("broker_order_id"),
+                }
+            )
+        except Exception as e:
+            print(f"Failed to read last trade: {e}")
+    elif args.cmd == "pullstrat":
+        pullstrat(args.name)
+    elif args.cmd == "addrepo":
+        tid = _slugify(args.name)
+        reg = _load_registry()
+        teams = reg.setdefault("teams", [])
+        found = False
+        for t in teams:
+            if t.get("team_id") == tid:
+                t["git_url"] = args.url
+                t["branch"] = args.branch
+                t.pop("repo_dir", None)
+                found = True
+                break
+        if not found:
+            teams.append(
+                {
+                    "team_id": tid,
+                    "git_url": args.url,
+                    "branch": args.branch,
+                    "entry_point": "strategy:Strategy",
+                    "initial_cash": 100000,
+                    "run_24_7": False,
+                }
+            )
+        _save_registry(reg)
+        print(f"Updated repo for team '{tid}' -> {args.url} @ {args.branch}")
+    elif args.cmd == "addmoney":
+        add_money(args.name, args.amount)
+
+    elif args.cmd in ("buy", "sell"):
+        _manual_trade(
+            args.name, args.symbol, args.quantity, side=args.cmd, price=args.price
+        )
+
+    elif args.cmd == "viewactivity":
+        try:
+            from zoneinfo import ZoneInfo
+
+            london = ZoneInfo("Europe/London")
+            for entry in subscribe_activity(tail=200):
+                ts_display = entry.timestamp.astimezone(london).strftime("%H:%M:%S")
+                print(f"{ts_display} | {entry.message}")
+        except KeyboardInterrupt:
+            return
+
+    elif args.cmd == "checkstatus":
+        check_status(show_positions=args.details)
+
+
+if __name__ == "__main__":
+    main()

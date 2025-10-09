@@ -1,0 +1,14 @@
+.vscode
+.venv
+__pycache__
+__init__.py
+qtc-quant-frontend
+data/
+cache/
+external_strategies/
+app/strats/
+*.parquet
+*.log
+.strategy_starter
+risk/
+settings.py

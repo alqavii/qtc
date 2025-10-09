@@ -1,0 +1,14 @@
+teams:
+- team_id: test1
+  entry_point: strategy:Strategy
+  initial_cash: 100000.0
+  run_24_7: false
+  git_url: https://github.com/alqavii/qtc-test-strategy
+  branch: main
+  repo_dir: /opt/QTC-Alpha/external_strategies/test1
+- team_id: test2
+  entry_point: strategy:Strategy
+  initial_cash: 100000.0
+  run_24_7: false
+  git_url: https://github.com/org/strategy.git
+  branch: main
