@@ -1,10 +1,11 @@
 .vscode
 .venv
+venv
 __pycache__
 __init__.py
 qtc-quant-frontend
 data/
-cache/
+.cache/
 external_strategies/
 app/strats/
 *.parquet
@@ -12,3 +13,5 @@ app/strats/
 .strategy_starter
 risk/
 settings.py
+.strategy_sync_state.json
+team_registry.yaml
