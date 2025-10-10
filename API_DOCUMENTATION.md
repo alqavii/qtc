@@ -262,7 +262,7 @@ curl http://localhost:8000/XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg
 
 ---
 
-#### 7. Get Team Historical Data ⭐ NEW
+#### 7. Get Team Historical Data
 **GET** `/api/v1/team/{team_id}/history`
 
 Returns time-series portfolio data for a specific team.
@@ -312,7 +312,7 @@ GET /api/v1/team/test1/history?key=XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg&d
 
 ---
 
-#### 8. Get Team Trade History ⭐ NEW
+#### 8. Get Team Trade History
 **GET** `/api/v1/team/{team_id}/trades`
 
 Returns recent executed trades for a team.
@@ -361,6 +361,159 @@ GET /api/v1/team/test1/trades?key=XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg&li
 - Display trade history table
 - Analyze trading patterns
 - Track order execution
+
+---
+
+#### 9. Get Team Performance Metrics
+**GET** `/api/v1/team/{team_id}/metrics`
+
+Returns comprehensive performance metrics including Sharpe ratio, Sortino ratio, Calmar ratio, maximum drawdown, total return, and more.
+
+**Authentication:** Required (API key)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `team_id` | string (path) | - | Team identifier |
+| `key` | string (query) | - | **Required** Team API key |
+| `days` | integer | all | Days to calculate over (1-365, null=all) |
+
+**Example Request:**
+```
+GET /api/v1/team/test1/metrics?key=XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg&days=7
+```
+
+**Response:**
+```json
+{
+  "team_id": "test1",
+  "metrics": {
+    "sharpe_ratio": 1.85,
+    "sortino_ratio": 2.34,
+    "calmar_ratio": 3.21,
+    "max_drawdown": -0.0542,
+    "max_drawdown_percentage": -5.42,
+    "current_drawdown": -0.0023,
+    "current_drawdown_percentage": -0.23,
+    "total_return": 0.0542,
+    "total_return_percentage": 5.42,
+    "annualized_return": 0.1247,
+    "annualized_return_percentage": 12.47,
+    "annualized_volatility": 0.0673,
+    "annualized_volatility_percentage": 6.73,
+    "win_rate": 0.58,
+    "win_rate_percentage": 58.0,
+    "profit_factor": 1.45,
+    "avg_win": 0.0012,
+    "avg_loss": -0.0009,
+    "total_trades": 250,
+    "winning_trades": 145,
+    "losing_trades": 105,
+    "current_value": 10542.75,
+    "starting_value": 10000.00,
+    "peak_value": 10650.25,
+    "trough_value": 9875.50,
+    "max_drawdown_details": {
+      "peak_value": 10650.25,
+      "trough_value": 10075.30,
+      "drawdown_amount": 574.95
+    },
+    "period": {
+      "start": "2025-10-03T09:30:00+00:00",
+      "end": "2025-10-10T16:00:00+00:00",
+      "days": 7.27,
+      "data_points": 2835
+    }
+  }
+}
+```
+
+**Metrics Explained:**
+
+| Metric | Description | Good Value |
+|--------|-------------|------------|
+| **Sharpe Ratio** | Risk-adjusted return | >1 good, >2 excellent |
+| **Sortino Ratio** | Return vs downside volatility | >1 good, >2 excellent |
+| **Calmar Ratio** | Return vs max drawdown | >1 good, >3 excellent |
+| **Max Drawdown** | Largest peak-to-trough decline | Closer to 0 is better |
+| **Total Return %** | Overall profit/loss since start | Positive is profitable |
+| **Annualized Return %** | Expected yearly return | Higher is better |
+| **Win Rate %** | Percentage of profitable periods | >50% is good |
+| **Profit Factor** | Total wins / total losses | >1 is profitable, >2 is good |
+
+**Use Cases:**
+- Comprehensive performance analysis
+- Risk assessment
+- Strategy evaluation
+- Detailed team dashboards
+
+---
+
+#### 10. Get Leaderboard with Metrics
+**GET** `/api/v1/leaderboard/metrics`
+
+Returns leaderboard with comprehensive performance metrics for all teams. Can be sorted by different criteria.
+
+**Authentication:** None (public endpoint)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `days` | integer | all | Days to calculate over (1-365, null=all) |
+| `sort_by` | string | portfolio_value | Sort by: portfolio_value, sharpe_ratio, total_return, calmar_ratio, sortino_ratio, annualized_return |
+
+**Example Request:**
+```
+GET /api/v1/leaderboard/metrics?days=7&sort_by=sharpe_ratio
+```
+
+**Response:**
+```json
+{
+  "leaderboard": [
+    {
+      "team_id": "test1",
+      "rank": 1,
+      "portfolio_value": 10542.75,
+      "sharpe_ratio": 1.85,
+      "sortino_ratio": 2.34,
+      "calmar_ratio": 3.21,
+      "max_drawdown": -0.0542,
+      "max_drawdown_percentage": -5.42,
+      "current_drawdown_percentage": -0.23,
+      "total_return": 0.0542,
+      "total_return_percentage": 5.42,
+      "annualized_return": 0.1247,
+      "annualized_return_percentage": 12.47,
+      "annualized_volatility_percentage": 6.73,
+      "win_rate_percentage": 58.0,
+      "profit_factor": 1.45,
+      "total_trades": 250,
+      "current_value": 10542.75,
+      "starting_value": 10000.00
+    },
+    {
+      "team_id": "test2",
+      "rank": 2,
+      "portfolio_value": 9875.50,
+      "sharpe_ratio": 1.62,
+      "sortino_ratio": 2.01,
+      "calmar_ratio": 2.85,
+      "max_drawdown_percentage": -6.24,
+      "total_return_percentage": 3.76,
+      "annualized_return_percentage": 10.21
+    }
+  ],
+  "sort_by": "sharpe_ratio",
+  "calculation_period_days": 7
+}
+```
+
+**Use Cases:**
+- Enhanced leaderboard with risk-adjusted metrics
+- Compare teams by different performance criteria
+- Find best risk-adjusted performers
+- Sort by Sharpe ratio instead of just portfolio value
 
 ---
 
@@ -559,7 +712,107 @@ print(f"Volatility: {df['returns'].std() * 100:.4f}%")
 
 ---
 
-### Example 5: cURL Commands
+### Example 5: Fetch and Display Team Metrics
+
+```javascript
+async function displayTeamMetrics(teamId, apiKey) {
+  // Fetch metrics
+  const response = await fetch(
+    `http://localhost:8000/api/v1/team/${teamId}/metrics?key=${apiKey}&days=7`
+  );
+  const data = await response.json();
+  const metrics = data.metrics;
+  
+  // Display in a dashboard
+  console.log(`Performance Metrics for ${teamId}:`);
+  console.log(`  Sharpe Ratio: ${metrics.sharpe_ratio.toFixed(2)}`);
+  console.log(`  Sortino Ratio: ${metrics.sortino_ratio.toFixed(2)}`);
+  console.log(`  Calmar Ratio: ${metrics.calmar_ratio.toFixed(2)}`);
+  console.log(`  Max Drawdown: ${metrics.max_drawdown_percentage.toFixed(2)}%`);
+  console.log(`  Total Return: ${metrics.total_return_percentage.toFixed(2)}%`);
+  console.log(`  Win Rate: ${metrics.win_rate_percentage.toFixed(2)}%`);
+  console.log(`  Profit Factor: ${metrics.profit_factor.toFixed(2)}`);
+  
+  // Create metrics cards
+  const metricsHTML = `
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <h3>Sharpe Ratio</h3>
+        <div class="value ${metrics.sharpe_ratio > 1 ? 'good' : 'poor'}">
+          ${metrics.sharpe_ratio.toFixed(2)}
+        </div>
+        <div class="label">${metrics.sharpe_ratio > 2 ? 'Excellent' : metrics.sharpe_ratio > 1 ? 'Good' : 'Poor'}</div>
+      </div>
+      <div class="metric-card">
+        <h3>Total Return</h3>
+        <div class="value ${metrics.total_return > 0 ? 'positive' : 'negative'}">
+          ${metrics.total_return_percentage.toFixed(2)}%
+        </div>
+      </div>
+      <div class="metric-card">
+        <h3>Max Drawdown</h3>
+        <div class="value">${metrics.max_drawdown_percentage.toFixed(2)}%</div>
+      </div>
+    </div>
+  `;
+  
+  document.getElementById('metrics-container').innerHTML = metricsHTML;
+}
+```
+
+---
+
+### Example 6: Enhanced Leaderboard with Metrics
+
+```javascript
+async function displayMetricsLeaderboard() {
+  // Fetch leaderboard with metrics, sorted by Sharpe ratio
+  const response = await fetch(
+    'http://localhost:8000/api/v1/leaderboard/metrics?days=7&sort_by=sharpe_ratio'
+  );
+  const data = await response.json();
+  
+  // Create table
+  const tableHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Team</th>
+          <th>Portfolio Value</th>
+          <th>Sharpe Ratio</th>
+          <th>Total Return</th>
+          <th>Max DD</th>
+          <th>Win Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${data.leaderboard.map(team => `
+          <tr>
+            <td>${team.rank}</td>
+            <td>${team.team_id}</td>
+            <td>$${team.portfolio_value?.toLocaleString() || 'N/A'}</td>
+            <td class="${team.sharpe_ratio > 1 ? 'good' : 'poor'}">
+              ${team.sharpe_ratio?.toFixed(2) || 'N/A'}
+            </td>
+            <td class="${team.total_return > 0 ? 'positive' : 'negative'}">
+              ${team.total_return_percentage?.toFixed(2) || 'N/A'}%
+            </td>
+            <td>${team.max_drawdown_percentage?.toFixed(2) || 'N/A'}%</td>
+            <td>${team.win_rate_percentage?.toFixed(2) || 'N/A'}%</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+  
+  document.getElementById('leaderboard').innerHTML = tableHTML;
+}
+```
+
+---
+
+### Example 7: cURL Commands
 
 ```bash
 # Get current leaderboard
@@ -573,6 +826,12 @@ curl "http://localhost:8000/api/v1/team/test1/history?key=YOUR_API_KEY&days=7&li
 
 # Get team trades
 curl "http://localhost:8000/api/v1/team/test1/trades?key=YOUR_API_KEY&limit=50"
+
+# Get team metrics ⭐ NEW
+curl "http://localhost:8000/api/v1/team/test1/metrics?key=YOUR_API_KEY&days=7"
+
+# Get leaderboard with metrics, sorted by Sharpe ratio ⭐ NEW
+curl "http://localhost:8000/api/v1/leaderboard/metrics?days=7&sort_by=sharpe_ratio"
 
 # Stream live activity
 curl http://localhost:8000/activity/stream
@@ -883,6 +1142,7 @@ async function fetchTeamData(teamId, apiKey) {
 ```
 GET  /leaderboard                          # Current rankings
 GET  /api/v1/leaderboard/history           # All teams historical data
+GET  /api/v1/leaderboard/metrics           # Leaderboard with performance metrics ⭐ NEW
 GET  /activity/recent                      # Recent activity log
 GET  /activity/stream                      # Live activity stream (SSE)
 ```
@@ -893,6 +1153,7 @@ GET  /line/{team_key}                      # Team status (JSON)
 GET  /{team_key}                           # Team status (plain text)
 GET  /api/v1/team/{team_id}/history        # Team historical data
 GET  /api/v1/team/{team_id}/trades         # Team trade history
+GET  /api/v1/team/{team_id}/metrics        # Team performance metrics ⭐ NEW
 ```
 
 ### Testing the API
