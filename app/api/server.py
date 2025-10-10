@@ -91,12 +91,33 @@ def _calculate_performance_metrics(history: List[Dict[str, Any]], initial_value:
         values = np.array([float(h['value']) for h in history])
         timestamps = [datetime.fromisoformat(h['timestamp'].replace('Z', '+00:00')) for h in history]
         
-        # Calculate returns
-        returns = np.diff(values) / values[:-1]
+        # Handle edge case: all zero values
+        if np.all(values == 0):
+            return {
+                "error": "All portfolio values are zero",
+                "data_points": len(history)
+            }
+        
+        # Calculate returns, handling division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            returns = np.diff(values) / values[:-1]
+        
+        # Filter out invalid returns (inf, -inf, nan)
+        valid_returns = returns[np.isfinite(returns)]
+        
+        if len(valid_returns) < 2:
+            return {
+                "error": "Insufficient valid returns for metrics calculation",
+                "data_points": len(history),
+                "valid_returns": len(valid_returns)
+            }
+        
+        # Use valid returns for calculations
+        returns = valid_returns
         
         # Time period analysis
         time_diff = (timestamps[-1] - timestamps[0]).total_seconds()
-        days_elapsed = time_diff / 86400
+        days_elapsed = max(time_diff / 86400, 0.001)  # Avoid zero
         years_elapsed = days_elapsed / 365.25
         
         # Assume minute-level data for annualization
@@ -107,22 +128,46 @@ def _calculate_performance_metrics(history: List[Dict[str, Any]], initial_value:
         mean_return = np.mean(returns)
         std_return = np.std(returns, ddof=1)
         
-        # Annualized metrics
-        annualized_return = mean_return * periods_per_year if years_elapsed > 0 else 0
-        annualized_volatility = std_return * np.sqrt(periods_per_year)
-        
-        # Sharpe Ratio (assuming risk-free rate = 0 for simplicity)
-        sharpe_ratio = (annualized_return / annualized_volatility) if annualized_volatility > 0 else 0
-        
-        # Sortino Ratio (only downside volatility)
-        downside_returns = returns[returns < 0]
-        downside_std = np.std(downside_returns, ddof=1) if len(downside_returns) > 1 else 0
-        annualized_downside_vol = downside_std * np.sqrt(periods_per_year)
-        sortino_ratio = (annualized_return / annualized_downside_vol) if annualized_downside_vol > 0 else 0
+        # Handle edge case: zero or near-zero volatility (constant portfolio value)
+        min_volatility = 1e-10
+        if std_return < min_volatility:
+            # Portfolio is essentially constant
+            annualized_return = mean_return * periods_per_year if years_elapsed > 0 else 0
+            annualized_volatility = 0.0
+            sharpe_ratio = 0.0 if abs(annualized_return) < 1e-10 else (np.inf if annualized_return > 0 else -np.inf)
+            sortino_ratio = 0.0
+        else:
+            # Normal calculations
+            annualized_return = mean_return * periods_per_year if years_elapsed > 0 else 0
+            annualized_volatility = std_return * np.sqrt(periods_per_year)
+            
+            # Sharpe Ratio (assuming risk-free rate = 0 for simplicity)
+            sharpe_ratio = annualized_return / annualized_volatility
+            
+            # Sortino Ratio (only downside volatility)
+            downside_returns = returns[returns < 0]
+            if len(downside_returns) > 1:
+                downside_std = np.std(downside_returns, ddof=1)
+                if downside_std < min_volatility:
+                    # No downside volatility (only gains)
+                    sortino_ratio = np.inf if annualized_return > 0 else 0.0
+                else:
+                    annualized_downside_vol = downside_std * np.sqrt(periods_per_year)
+                    sortino_ratio = annualized_return / annualized_downside_vol
+            else:
+                # No or insufficient downside moves
+                sortino_ratio = np.inf if annualized_return > 0 else 0.0
         
         # Drawdown analysis
         cumulative_max = np.maximum.accumulate(values)
-        drawdowns = (values - cumulative_max) / cumulative_max
+        
+        # Handle division by zero in drawdown calculation
+        with np.errstate(divide='ignore', invalid='ignore'):
+            drawdowns = (values - cumulative_max) / cumulative_max
+        
+        # Replace inf/nan with 0 (can happen if cumulative_max is 0)
+        drawdowns = np.nan_to_num(drawdowns, nan=0.0, posinf=0.0, neginf=0.0)
+        
         max_drawdown = float(np.min(drawdowns))
         
         # Find max drawdown period
@@ -134,13 +179,30 @@ def _calculate_performance_metrics(history: List[Dict[str, Any]], initial_value:
         current_drawdown = float(drawdowns[-1])
         
         # Calmar Ratio (annualized return / max drawdown)
-        calmar_ratio = (annualized_return / abs(max_drawdown)) if max_drawdown != 0 else 0
+        if abs(max_drawdown) < 1e-10:
+            # No drawdown (perfect performance or flat)
+            if abs(annualized_return) < 1e-10:
+                calmar_ratio = 0.0
+            else:
+                calmar_ratio = np.inf if annualized_return > 0 else -np.inf
+        else:
+            calmar_ratio = annualized_return / abs(max_drawdown)
         
         # Total return
         start_value = initial_value if initial_value else values[0]
         end_value = values[-1]
-        total_return = (end_value - start_value) / start_value
-        total_return_percentage = total_return * 100
+        
+        # Handle zero starting value
+        if abs(start_value) < 1e-10:
+            if abs(end_value) < 1e-10:
+                total_return = 0.0
+            else:
+                # Started from 0, gained value
+                total_return = np.inf if end_value > 0 else -np.inf
+        else:
+            total_return = (end_value - start_value) / start_value
+        
+        total_return_percentage = total_return * 100 if np.isfinite(total_return) else total_return
         
         # Win rate
         win_rate = float(np.sum(returns > 0) / len(returns)) if len(returns) > 0 else 0
@@ -154,38 +216,55 @@ def _calculate_performance_metrics(history: List[Dict[str, Any]], initial_value:
         # Profit factor
         total_wins = float(np.sum(winning_returns)) if len(winning_returns) > 0 else 0
         total_losses = abs(float(np.sum(losing_returns))) if len(losing_returns) > 0 else 0
-        profit_factor = (total_wins / total_losses) if total_losses > 0 else 0
+        
+        if total_losses < 1e-10:
+            # No losses
+            if total_wins > 1e-10:
+                profit_factor = np.inf  # All wins, no losses
+            else:
+                profit_factor = 0.0  # No wins, no losses
+        else:
+            profit_factor = total_wins / total_losses
+        
+        # Helper function to convert inf to None for JSON serialization
+        def safe_float(value):
+            """Convert value to float, replacing inf with None for JSON compatibility."""
+            if np.isinf(value):
+                return None  # JSON-friendly representation
+            if np.isnan(value):
+                return None
+            return float(value)
         
         return {
-            "sharpe_ratio": float(sharpe_ratio),
-            "sortino_ratio": float(sortino_ratio),
-            "calmar_ratio": float(calmar_ratio),
-            "max_drawdown": float(max_drawdown),
-            "max_drawdown_percentage": float(max_drawdown * 100),
-            "current_drawdown": float(current_drawdown),
-            "current_drawdown_percentage": float(current_drawdown * 100),
-            "total_return": float(total_return),
-            "total_return_percentage": float(total_return_percentage),
-            "annualized_return": float(annualized_return),
-            "annualized_return_percentage": float(annualized_return * 100),
-            "annualized_volatility": float(annualized_volatility),
-            "annualized_volatility_percentage": float(annualized_volatility * 100),
-            "win_rate": float(win_rate),
-            "win_rate_percentage": float(win_rate * 100),
-            "profit_factor": float(profit_factor),
-            "avg_win": float(avg_win),
-            "avg_loss": float(avg_loss),
+            "sharpe_ratio": safe_float(sharpe_ratio),
+            "sortino_ratio": safe_float(sortino_ratio),
+            "calmar_ratio": safe_float(calmar_ratio),
+            "max_drawdown": safe_float(max_drawdown),
+            "max_drawdown_percentage": safe_float(max_drawdown * 100),
+            "current_drawdown": safe_float(current_drawdown),
+            "current_drawdown_percentage": safe_float(current_drawdown * 100),
+            "total_return": safe_float(total_return),
+            "total_return_percentage": safe_float(total_return_percentage),
+            "annualized_return": safe_float(annualized_return),
+            "annualized_return_percentage": safe_float(annualized_return * 100),
+            "annualized_volatility": safe_float(annualized_volatility),
+            "annualized_volatility_percentage": safe_float(annualized_volatility * 100),
+            "win_rate": safe_float(win_rate),
+            "win_rate_percentage": safe_float(win_rate * 100),
+            "profit_factor": safe_float(profit_factor),
+            "avg_win": safe_float(avg_win),
+            "avg_loss": safe_float(avg_loss),
             "total_trades": int(len(returns)),
             "winning_trades": int(len(winning_returns)),
             "losing_trades": int(len(losing_returns)),
-            "current_value": float(end_value),
-            "starting_value": float(start_value),
-            "peak_value": float(np.max(values)),
-            "trough_value": float(np.min(values)),
+            "current_value": safe_float(end_value),
+            "starting_value": safe_float(start_value),
+            "peak_value": safe_float(np.max(values)),
+            "trough_value": safe_float(np.min(values)),
             "max_drawdown_details": {
-                "peak_value": float(max_dd_peak),
-                "trough_value": float(max_dd_value),
-                "drawdown_amount": float(max_dd_peak - max_dd_value)
+                "peak_value": safe_float(max_dd_peak),
+                "trough_value": safe_float(max_dd_value),
+                "drawdown_amount": safe_float(max_dd_peak - max_dd_value)
             },
             "period": {
                 "start": timestamps[0].isoformat(),
