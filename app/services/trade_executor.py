@@ -527,6 +527,9 @@ class TradeExecutor:
             r.pop("positions", None)
 
         df_new = pd.DataFrame(rows)
+        for col in ("cash", "market_value"):
+            if col in df_new.columns:
+                df_new[col] = pd.to_numeric(df_new[col], errors="coerce")
         if "timestamp" in df_new.columns:
             df_new["timestamp"] = pd.to_datetime(
                 df_new["timestamp"], utc=True, errors="coerce"
@@ -541,6 +544,10 @@ class TradeExecutor:
                 df_all = df_new
         else:
             df_all = df_new
+
+        for col in ("cash", "market_value"):
+            if col in df_all.columns:
+                df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
         if "timestamp" in df_all.columns:
             df_all = df_all.sort_values("timestamp").drop_duplicates(
@@ -602,6 +609,9 @@ class TradeExecutor:
             r.pop("positions", None)
 
         df_new = pd.DataFrame(rows)
+        for col in ("cash", "market_value"):
+            if col in df_new.columns:
+                df_new[col] = pd.to_numeric(df_new[col], errors="coerce")
         # Ensure timestamp is datetime
         if "timestamp" in df_new.columns:
             df_new["timestamp"] = pd.to_datetime(
@@ -617,6 +627,10 @@ class TradeExecutor:
                 df_all = df_new
         else:
             df_all = df_new
+
+        for col in ("cash", "market_value"):
+            if col in df_all.columns:
+                df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
         # Sort by timestamp and drop duplicates
         if "timestamp" in df_all.columns:
