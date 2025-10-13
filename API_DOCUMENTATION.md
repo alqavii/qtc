@@ -1,7 +1,7 @@
 # QTC Alpha API Documentation
 
 **Version:** Beta
-**Last Updated:** October 10, 2025
+**Last Updated:** October 13, 2025
 
 ---
 
@@ -12,6 +12,7 @@
 3. [Endpoints](#endpoints)
    - [Public Endpoints](#public-endpoints)
    - [Team-Authenticated Endpoints](#team-authenticated-endpoints)
+   - [Strategy Upload Endpoints](#strategy-upload-endpoints) ⭐ NEW
 4. [Data Formats](#data-formats)
 5. [Usage Examples](#usage-examples)
 6. [Frontend Integration](#frontend-integration)
@@ -28,11 +29,13 @@ The QTC Alpha API provides both public and authenticated endpoints for accessing
 - **Historical portfolio performance** for visualizations
 - **Team-specific metrics and trade history**
 - **Server-Sent Events (SSE)** for live activity streams
+- **Strategy file uploads** (single file, ZIP packages, or multiple files) ⭐ NEW
 
 **API Features:**
 - RESTful JSON API
-- CORS enabled for browser access
+- CORS enabled for browser access (GET and POST methods)
 - Server-Sent Events for real-time updates
+- File upload support for strategy deployment
 - Rate-limited to prevent abuse
 
 ---
@@ -513,6 +516,292 @@ GET /api/v1/leaderboard/metrics?days=7&sort_by=sharpe_ratio
 - Compare teams by different performance criteria
 - Find best risk-adjusted performers
 - Sort by Sharpe ratio instead of just portfolio value
+
+---
+
+### Strategy Upload Endpoints
+
+⭐ **NEW:** Teams can now upload their trading strategies directly via API instead of using GitHub!
+
+#### 11. Upload Single Strategy File
+**POST** `/api/v1/team/{team_id}/upload-strategy`
+
+Upload a single `strategy.py` file for simple strategies.
+
+**Authentication:** Required (form field)
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `team_id` | path | Team identifier |
+| `key` | form | Team API key |
+| `strategy_file` | file | Python file (.py) |
+
+**Example Request (cURL):**
+```bash
+curl -X POST "http://localhost:8000/api/v1/team/epsilon/upload-strategy" \
+  -F "key=XkljWYUo_pGcZWi7q6BRX6Z5022Vy1KdyhLd_vGLVcw" \
+  -F "strategy_file=@strategy.py"
+```
+
+**Example Request (JavaScript):**
+```javascript
+const formData = new FormData();
+formData.append('key', apiKey);
+formData.append('strategy_file', file);
+
+const response = await fetch(
+  `http://localhost:8000/api/v1/team/${teamId}/upload-strategy`,
+  { method: 'POST', body: formData }
+);
+const result = await response.json();
+```
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "message": "Strategy uploaded successfully for epsilon",
+  "team_id": "epsilon",
+  "files_uploaded": ["strategy.py"],
+  "path": "/opt/qtc/external_strategies/epsilon",
+  "note": "Strategy will be loaded on the next trading cycle"
+}
+```
+
+**Error Response (Validation Failed):**
+```json
+{
+  "detail": "Validation failed: Disallowed import: requests in strategy.py"
+}
+```
+
+---
+
+#### 12. Upload Strategy Package (ZIP)
+**POST** `/api/v1/team/{team_id}/upload-strategy-package`
+
+Upload a ZIP file containing `strategy.py` and helper modules for complex multi-file strategies.
+
+**Authentication:** Required (form field)
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `team_id` | path | Team identifier |
+| `key` | form | Team API key |
+| `strategy_zip` | file | ZIP archive containing Python files |
+
+**ZIP Structure:**
+```
+strategy_package.zip
+├── strategy.py          # Required entry point
+├── indicators.py        # Helper module (optional)
+├── risk_manager.py      # Helper module (optional)
+└── utils.py             # Helper module (optional)
+```
+
+**Example Request (cURL):**
+```bash
+curl -X POST "http://localhost:8000/api/v1/team/epsilon/upload-strategy-package" \
+  -F "key=YOUR_API_KEY" \
+  -F "strategy_zip=@strategy_package.zip"
+```
+
+**Example Request (Python):**
+```python
+import requests
+
+with open('strategy_package.zip', 'rb') as f:
+    response = requests.post(
+        'http://localhost:8000/api/v1/team/epsilon/upload-strategy-package',
+        files={'strategy_zip': f},
+        data={'key': 'YOUR_API_KEY'}
+    )
+    
+result = response.json()
+print(f"Uploaded {result['file_count']} files")
+```
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "message": "Strategy package uploaded successfully for epsilon",
+  "team_id": "epsilon",
+  "files_uploaded": [
+    "strategy.py",
+    "indicators.py",
+    "risk_manager.py",
+    "utils.py"
+  ],
+  "file_count": 4,
+  "path": "/opt/qtc/external_strategies/epsilon",
+  "validation": {
+    "all_files_validated": true,
+    "security_checks_passed": true
+  },
+  "note": "Strategy will be loaded on the next trading cycle"
+}
+```
+
+---
+
+#### 13. Upload Multiple Files
+**POST** `/api/v1/team/{team_id}/upload-multiple-files`
+
+Upload multiple Python files individually (alternative to ZIP).
+
+**Authentication:** Required (form field)
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `team_id` | path | Team identifier |
+| `key` | form | Team API key |
+| `files` | files | Multiple Python files (must include strategy.py) |
+
+**Example Request (cURL):**
+```bash
+curl -X POST "http://localhost:8000/api/v1/team/epsilon/upload-multiple-files" \
+  -F "key=YOUR_API_KEY" \
+  -F "files=@strategy.py" \
+  -F "files=@indicators.py" \
+  -F "files=@utils.py"
+```
+
+**Example Request (JavaScript):**
+```javascript
+const formData = new FormData();
+formData.append('key', apiKey);
+
+// Add multiple files
+for (const file of fileInput.files) {
+  formData.append('files', file);
+}
+
+const response = await fetch(
+  `http://localhost:8000/api/v1/team/${teamId}/upload-multiple-files`,
+  { method: 'POST', body: formData }
+);
+```
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "message": "Multiple files uploaded successfully for epsilon",
+  "team_id": "epsilon",
+  "files_uploaded": ["strategy.py", "indicators.py", "utils.py"],
+  "file_count": 3,
+  "path": "/opt/qtc/external_strategies/epsilon",
+  "validation": {
+    "all_files_validated": true,
+    "security_checks_passed": true
+  },
+  "note": "Strategy will be loaded on the next trading cycle"
+}
+```
+
+---
+
+#### Security Validation
+
+All uploaded files are automatically validated for security:
+
+**✅ Allowed Imports:**
+- **Data Processing:** `numpy`, `pandas`, `scipy`
+- **Mathematics:** `math`, `statistics`, `decimal`
+- **Standard Library:** `collections`, `typing`
+
+**❌ Blocked Operations:**
+- **Network Access:** `requests`, `urllib`, `socket`, `http`
+- **File I/O:** `open()`, file operations
+- **System Calls:** `subprocess`, `os.system`, `eval()`, `exec()`
+- **Dynamic Imports:** `__import__()`, `importlib` (for user code)
+
+**Validation Checks:**
+1. File type validation (.py or .zip only)
+2. UTF-8 encoding verification
+3. Python syntax checking (AST parsing)
+4. Import whitelist enforcement
+5. Path traversal prevention (for ZIP uploads)
+6. File size limits (10 MB per file in ZIP)
+7. Dangerous operation blocking
+
+**Error Examples:**
+```json
+// Invalid import
+{
+  "detail": "Validation failed: Disallowed import: requests in strategy.py"
+}
+
+// Missing strategy.py
+{
+  "detail": "Strategy validation failed: strategy.py not found in upload"
+}
+
+// Path traversal attempt
+{
+  "detail": "Invalid file path in ZIP: ../../../etc/passwd"
+}
+```
+
+---
+
+#### Multi-File Strategy Example
+
+**strategy.py** (main entry point):
+```python
+from indicators import calculate_rsi
+from risk_manager import RiskManager
+
+class Strategy:
+    def __init__(self, **kwargs):
+        self.risk = RiskManager()
+    
+    def generate_signal(self, team, bars, current_prices):
+        rsi = calculate_rsi(bars['AAPL']['close'])
+        
+        if rsi < 30:  # Oversold
+            quantity = self.risk.calculate_size(team['cash'], current_prices['AAPL'])
+            return {
+                "symbol": "AAPL",
+                "action": "buy",
+                "quantity": quantity,
+                "price": current_prices['AAPL']
+            }
+        return None
+```
+
+**indicators.py** (helper module):
+```python
+import numpy as np
+
+def calculate_rsi(prices, period=14):
+    deltas = np.diff(prices)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    
+    avg_gain = np.mean(gains[-period:])
+    avg_loss = np.mean(losses[-period:])
+    
+    if avg_loss == 0:
+        return 100
+    
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+```
+
+**risk_manager.py** (helper module):
+```python
+class RiskManager:
+    def calculate_size(self, cash, price, max_position=0.10):
+        max_dollar = cash * max_position
+        return max(1, int(max_dollar / price))
+```
+
+📄 **For complete upload documentation, see:** [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md)
 
 ---
 
@@ -1141,7 +1430,7 @@ async function fetchTeamData(teamId, apiKey) {
 ```
 GET  /leaderboard                          # Current rankings
 GET  /api/v1/leaderboard/history           # All teams historical data
-GET  /api/v1/leaderboard/metrics           # Leaderboard with performance metrics ⭐ NEW
+GET  /api/v1/leaderboard/metrics           # Leaderboard with performance metrics
 GET  /activity/recent                      # Recent activity log
 GET  /activity/stream                      # Live activity stream (SSE)
 ```
@@ -1152,7 +1441,14 @@ GET  /line/{team_key}                      # Team status (JSON)
 GET  /{team_key}                           # Team status (plain text)
 GET  /api/v1/team/{team_id}/history        # Team historical data
 GET  /api/v1/team/{team_id}/trades         # Team trade history
-GET  /api/v1/team/{team_id}/metrics        # Team performance metrics ⭐ NEW
+GET  /api/v1/team/{team_id}/metrics        # Team performance metrics
+```
+
+### Strategy Upload Endpoints (Require API Key) ⭐ NEW
+```
+POST /api/v1/team/{team_id}/upload-strategy            # Upload single strategy.py file
+POST /api/v1/team/{team_id}/upload-strategy-package    # Upload ZIP package (multi-file)
+POST /api/v1/team/{team_id}/upload-multiple-files      # Upload multiple files individually
 ```
 
 ### Testing the API
@@ -1163,6 +1459,11 @@ curl http://localhost:8000/leaderboard | jq
 
 # Test team history (replace with your key)
 curl "http://localhost:8000/api/v1/team/test1/history?key=YOUR_KEY&days=7" | jq
+
+# Test strategy upload (NEW)
+curl -X POST "http://localhost:8000/api/v1/team/epsilon/upload-strategy" \
+  -F "key=YOUR_API_KEY" \
+  -F "strategy_file=@strategy.py"
 
 # Test with httpie (prettier output)
 http GET http://localhost:8000/leaderboard
@@ -1177,6 +1478,7 @@ For issues or questions:
 2. Verify API server is running: `ps aux | grep uvicorn`
 3. Test endpoints with `curl` or browser DevTools
 4. Check CORS settings if accessing from browser
+5. For strategy upload issues, see [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md)
 
 **Start API Server:**
 ```bash

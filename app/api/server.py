@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, Optional, List
@@ -10,6 +10,9 @@ from datetime import datetime, timedelta, timezone
 from app.config.environments import config
 from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
+import shutil
+import tempfile
+import zipfile
 
 import json
 
@@ -21,7 +24,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"]
 )
 
@@ -948,3 +951,444 @@ def get_team_line_by_team_key(team_key: str):
     if not team_id:
         raise HTTPException(status_code=401, detail='invalid key')
     return _team_line(team_id)
+
+
+# ============================================================================
+# STRATEGY UPLOAD ENDPOINTS
+# ============================================================================
+
+def _validate_strategy_files(directory: Path) -> Dict[str, Any]:
+    """Validate all Python files in a directory for security.
+    
+    Returns:
+        Dictionary with validation results including file list and any errors
+    """
+    from app.loaders.static_check import ast_sanity_check
+    
+    # Check that strategy.py exists
+    strategy_file = directory / "strategy.py"
+    if not strategy_file.exists():
+        return {
+            "valid": False,
+            "error": "strategy.py not found in upload. This file is required as the entry point.",
+            "files": []
+        }
+    
+    # Get list of all Python files
+    py_files = list(directory.rglob("*.py"))
+    file_list = [str(f.relative_to(directory)) for f in py_files]
+    
+    # Run security validation on all files
+    try:
+        ast_sanity_check(directory)  # Validates all .py files recursively
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": str(e),
+            "files": file_list
+        }
+    
+    return {
+        "valid": True,
+        "files": file_list,
+        "file_count": len(file_list)
+    }
+
+
+def _update_team_registry(team_id: str, repo_dir: Path) -> None:
+    """Update team registry to use the uploaded strategy directory."""
+    import yaml
+    
+    registry_path = Path("/opt/qtc/team_registry.yaml")
+    
+    # Load registry
+    if registry_path.exists():
+        reg = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    else:
+        reg = {}
+    
+    teams = reg.setdefault("teams", [])
+    
+    # Update or create team entry
+    found = False
+    for team in teams:
+        if team.get("team_id") == team_id:
+            team["repo_dir"] = str(repo_dir)
+            team.pop("git_url", None)  # Remove git_url if present
+            found = True
+            break
+    
+    if not found:
+        # Team doesn't exist in registry, create basic entry
+        teams.append({
+            "team_id": team_id,
+            "repo_dir": str(repo_dir),
+            "entry_point": "strategy:Strategy",
+            "initial_cash": 100000,
+            "run_24_7": False
+        })
+    
+    # Save registry
+    registry_path.write_text(yaml.safe_dump(reg, sort_keys=False), encoding="utf-8")
+
+
+@app.post("/api/v1/team/{team_id}/upload-strategy")
+async def upload_single_strategy(
+    team_id: str,
+    key: str = Form(..., description="Team API key for authentication"),
+    strategy_file: UploadFile = File(..., description="strategy.py file")
+):
+    """Upload a single strategy.py file for a team.
+    
+    This endpoint is for simple, single-file strategies. For multi-file strategies,
+    use the /upload-strategy-package endpoint with a ZIP file.
+    
+    **Authentication:** Requires team API key
+    
+    **Parameters:**
+    - `team_id`: Team identifier
+    - `key`: Team API key (form field)
+    - `strategy_file`: Python file to upload (must be named strategy.py)
+    
+    **Example using curl:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/v1/team/test1/upload-strategy" \
+      -F "key=YOUR_API_KEY" \
+      -F "strategy_file=@strategy.py"
+    ```
+    
+    **Returns:**
+    ```json
+    {
+        "success": true,
+        "message": "Strategy uploaded successfully",
+        "team_id": "test1",
+        "files_uploaded": ["strategy.py"],
+        "path": "/opt/qtc/external_strategies/test1",
+        "note": "Strategy will be loaded on the next trading cycle"
+    }
+    ```
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    # Validate filename
+    if not strategy_file.filename.endswith('.py'):
+        raise HTTPException(status_code=400, detail='File must be a Python (.py) file')
+    
+    # Read file content
+    try:
+        content = await strategy_file.read()
+        code_str = content.decode('utf-8')
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail='File must be valid UTF-8 encoded text')
+    
+    # Validate in temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        temp_strategy = temp_path / "strategy.py"
+        temp_strategy.write_text(code_str, encoding='utf-8')
+        
+        # Security validation
+        validation = _validate_strategy_files(temp_path)
+        if not validation["valid"]:
+            raise HTTPException(status_code=400, detail=f'Validation failed: {validation["error"]}')
+    
+    # If validation passed, save to external_strategies
+    strategy_dir = Path("/opt/qtc/external_strategies") / team_id
+    strategy_dir.mkdir(parents=True, exist_ok=True)
+    
+    strategy_path = strategy_dir / "strategy.py"
+    strategy_path.write_text(code_str, encoding='utf-8')
+    
+    # Update registry
+    _update_team_registry(team_id, strategy_dir)
+    
+    return {
+        "success": True,
+        "message": f"Strategy uploaded successfully for {team_id}",
+        "team_id": team_id,
+        "files_uploaded": ["strategy.py"],
+        "path": str(strategy_dir),
+        "note": "Strategy will be loaded on the next trading cycle"
+    }
+
+
+@app.post("/api/v1/team/{team_id}/upload-strategy-package")
+async def upload_strategy_package(
+    team_id: str,
+    key: str = Form(..., description="Team API key for authentication"),
+    strategy_zip: UploadFile = File(..., description="ZIP file containing strategy.py and helper modules")
+):
+    """Upload a ZIP package containing strategy.py and multiple helper files.
+    
+    This endpoint supports complex, multi-file strategies. The ZIP should contain:
+    - strategy.py (required) - Main entry point with Strategy class
+    - Any number of additional .py files (helpers, utilities, etc.)
+    
+    **Authentication:** Requires team API key
+    
+    **Parameters:**
+    - `team_id`: Team identifier
+    - `key`: Team API key (form field)
+    - `strategy_zip`: ZIP file containing Python files
+    
+    **ZIP Structure Example:**
+    ```
+    strategy_package.zip
+    ├── strategy.py          # Required entry point
+    ├── indicators.py        # Helper module
+    ├── risk_manager.py      # Helper module
+    └── utils.py             # Helper module
+    ```
+    
+    **Example using curl:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/v1/team/test1/upload-strategy-package" \
+      -F "key=YOUR_API_KEY" \
+      -F "strategy_zip=@my_strategy.zip"
+    ```
+    
+    **Example using Python requests:**
+    ```python
+    import requests
+    
+    files = {'strategy_zip': open('strategy_package.zip', 'rb')}
+    data = {'key': 'YOUR_API_KEY'}
+    response = requests.post(
+        'http://localhost:8000/api/v1/team/test1/upload-strategy-package',
+        files=files,
+        data=data
+    )
+    print(response.json())
+    ```
+    
+    **Returns:**
+    ```json
+    {
+        "success": true,
+        "message": "Strategy package uploaded successfully",
+        "team_id": "test1",
+        "files_uploaded": [
+            "strategy.py",
+            "indicators.py",
+            "risk_manager.py",
+            "utils.py"
+        ],
+        "file_count": 4,
+        "path": "/opt/qtc/external_strategies/test1",
+        "validation": {
+            "all_files_validated": true,
+            "security_checks_passed": true
+        }
+    }
+    ```
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    # Validate file type
+    if not strategy_zip.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail='File must be a ZIP archive')
+    
+    # Read ZIP content
+    content = await strategy_zip.read()
+    
+    # Extract and validate in temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        zip_path = temp_path / "upload.zip"
+        zip_path.write_bytes(content)
+        
+        try:
+            # Extract ZIP with security checks
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Security: Check for path traversal attempts
+                for member in zip_ref.namelist():
+                    # Normalize the path
+                    member_path = Path(member).resolve()
+                    
+                    # Check for absolute paths or parent directory references
+                    if member.startswith('/') or '..' in Path(member).parts:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f'Invalid file path in ZIP: {member}. Paths must be relative and not use ..'
+                        )
+                    
+                    # Check file size (prevent zip bombs)
+                    info = zip_ref.getinfo(member)
+                    if info.file_size > 10 * 1024 * 1024:  # 10 MB limit per file
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f'File {member} is too large (max 10 MB per file)'
+                        )
+                
+                # Extract to temporary location
+                extracted_dir = temp_path / "extracted"
+                zip_ref.extractall(extracted_dir)
+        
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail='Invalid or corrupted ZIP file')
+        
+        # Validate extracted files
+        validation = _validate_strategy_files(extracted_dir)
+        
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Strategy validation failed: {validation["error"]}'
+            )
+        
+        # If validation passed, copy to external_strategies
+        strategy_dir = Path("/opt/qtc/external_strategies") / team_id
+        
+        # Remove old strategy files
+        if strategy_dir.exists():
+            shutil.rmtree(strategy_dir)
+        
+        # Copy validated files
+        shutil.copytree(extracted_dir, strategy_dir)
+    
+    # Update registry
+    _update_team_registry(team_id, strategy_dir)
+    
+    return {
+        "success": True,
+        "message": f"Strategy package uploaded successfully for {team_id}",
+        "team_id": team_id,
+        "files_uploaded": validation["files"],
+        "file_count": validation["file_count"],
+        "path": str(strategy_dir),
+        "validation": {
+            "all_files_validated": True,
+            "security_checks_passed": True
+        },
+        "note": "Strategy will be loaded on the next trading cycle"
+    }
+
+
+@app.post("/api/v1/team/{team_id}/upload-multiple-files")
+async def upload_multiple_files(
+    team_id: str,
+    key: str = Form(..., description="Team API key for authentication"),
+    files: List[UploadFile] = File(..., description="Multiple Python files (must include strategy.py)")
+):
+    """Upload multiple Python files for a multi-file strategy.
+    
+    Alternative to ZIP upload - allows uploading multiple individual files.
+    One of the files must be named strategy.py (the entry point).
+    
+    **Authentication:** Requires team API key
+    
+    **Parameters:**
+    - `team_id`: Team identifier
+    - `key`: Team API key (form field)
+    - `files`: Multiple Python files (must include strategy.py)
+    
+    **Example using curl:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/v1/team/test1/upload-multiple-files" \
+      -F "key=YOUR_API_KEY" \
+      -F "files=@strategy.py" \
+      -F "files=@indicators.py" \
+      -F "files=@utils.py"
+    ```
+    
+    **Example using Python requests:**
+    ```python
+    import requests
+    
+    files_to_upload = [
+        ('files', open('strategy.py', 'rb')),
+        ('files', open('indicators.py', 'rb')),
+        ('files', open('utils.py', 'rb'))
+    ]
+    data = {'key': 'YOUR_API_KEY'}
+    response = requests.post(
+        'http://localhost:8000/api/v1/team/test1/upload-multiple-files',
+        files=files_to_upload,
+        data=data
+    )
+    print(response.json())
+    ```
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    # Check that at least one file is provided
+    if not files:
+        raise HTTPException(status_code=400, detail='No files provided')
+    
+    # Validate and save to temporary directory first
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        uploaded_files = []
+        
+        for file in files:
+            # Validate file extension
+            if not file.filename.endswith('.py'):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'All files must be Python (.py) files. Invalid: {file.filename}'
+                )
+            
+            # Validate filename (no path traversal)
+            filename = Path(file.filename).name
+            if filename != file.filename or '..' in filename:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'Invalid filename: {file.filename}'
+                )
+            
+            # Read and save file
+            try:
+                content = await file.read()
+                code_str = content.decode('utf-8')
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'File {file.filename} must be valid UTF-8 encoded text'
+                )
+            
+            file_path = temp_path / filename
+            file_path.write_text(code_str, encoding='utf-8')
+            uploaded_files.append(filename)
+        
+        # Validate all files
+        validation = _validate_strategy_files(temp_path)
+        
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Strategy validation failed: {validation["error"]}'
+            )
+        
+        # If validation passed, copy to external_strategies
+        strategy_dir = Path("/opt/qtc/external_strategies") / team_id
+        
+        # Remove old strategy files
+        if strategy_dir.exists():
+            shutil.rmtree(strategy_dir)
+        
+        # Copy validated files
+        shutil.copytree(temp_path, strategy_dir)
+    
+    # Update registry
+    _update_team_registry(team_id, strategy_dir)
+    
+    return {
+        "success": True,
+        "message": f"Multiple files uploaded successfully for {team_id}",
+        "team_id": team_id,
+        "files_uploaded": uploaded_files,
+        "file_count": len(uploaded_files),
+        "path": str(strategy_dir),
+        "validation": {
+            "all_files_validated": True,
+            "security_checks_passed": True
+        },
+        "note": "Strategy will be loaded on the next trading cycle"
+    }

@@ -51,6 +51,29 @@ Quick start guide:
 
 ## 🎯 Specialized Documentation
 
+### Strategy Upload (NEW!)
+
+**[STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md)** ⭐
+Complete guide for uploading strategies via API:
+- Three upload methods (single file, ZIP, multiple files)
+- Security validation details
+- Multi-file strategy support
+- Frontend integration examples
+- cURL, Python, and JavaScript examples
+
+**Read time:** 20 minutes  
+**Audience:** Teams, frontend developers
+
+**[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)**
+Technical implementation details:
+- What was implemented
+- How it works
+- Testing guide
+- Integration notes
+
+**Read time:** 10 minutes  
+**Audience:** Developers, system administrators
+
 ### Strategy Development
 
 **[strategy_starter/README.md](strategy_starter/README.md)**
@@ -80,6 +103,9 @@ Quick start guide:
 #### "How do I write a strategy?"
 → Read [strategy_starter/README.md](strategy_starter/README.md)
 
+#### "How do I upload my strategy?"
+→ Read [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md) ⭐ NEW
+
 #### "What are the rate limits?"
 → See [SYSTEM_DOCUMENTATION.md - FAQ](SYSTEM_DOCUMENTATION.md#faq---frequently-asked-questions)
 
@@ -100,9 +126,11 @@ Quick start guide:
 ### Development
 - [strategy_starter/README.md](strategy_starter/README.md)
 - [SYSTEM_DOCUMENTATION.md - Trading Strategies](SYSTEM_DOCUMENTATION.md#trading-strategies)
+- [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md) - Upload strategies via API ⭐
 
 ### API Integration
 - [API_DOCUMENTATION.md](API_DOCUMENTATION.md)
+- [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md) - File upload endpoints ⭐
 - [API_DOCUMENTATION.md - Usage Examples](API_DOCUMENTATION.md#usage-examples)
 
 ### Operations
@@ -122,7 +150,9 @@ Quick start guide:
 | API_DOCUMENTATION.md | ✅ Complete | Oct 10, 2025 |
 | README.md | ✅ Complete | Oct 10, 2025 |
 | strategy_starter/README.md | ✅ Complete | Oct 10, 2025 |
-| DOCUMENTATION_INDEX.md | ✅ Complete | Oct 10, 2025 |
+| **STRATEGY_UPLOAD_API.md** | ✅ Complete | **Oct 13, 2025** |
+| **IMPLEMENTATION_SUMMARY.md** | ✅ Complete | **Oct 13, 2025** |
+| DOCUMENTATION_INDEX.md | ✅ Complete | Oct 13, 2025 |
 
 ---
 
@@ -179,6 +209,18 @@ New to QTC Alpha? Follow this path:
 
 ---
 
-**Last Updated:** October 10, 2025  
+**Last Updated:** October 13, 2025  
 **Maintained by:** QTC Alpha Team
+
+---
+
+## ⭐ Latest Updates
+
+### October 13, 2025 - Strategy Upload Feature
+- ✅ Added file upload API endpoints
+- ✅ Support for single file, ZIP, and multiple file uploads
+- ✅ Multi-file strategy support confirmed
+- ✅ Comprehensive security validation
+- ✅ Complete documentation and test suite
+- 📄 See [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md) for details
 
