@@ -3,6 +3,8 @@ from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Fo
 from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from typing import Dict, Any, Optional, List
 import asyncio
 import threading
@@ -27,6 +29,51 @@ app = FastAPI(title="QTC Alpha API", version="1.0")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Middleware to enforce request body size limits.
+    
+    Prevents memory exhaustion from large uploads by checking Content-Length
+    header before reading the request body. Returns 413 Payload Too Large
+    for oversized requests.
+    """
+    
+    MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB for single files
+    MAX_PACKAGE_SIZE = 50 * 1024 * 1024  # 50MB for ZIP packages
+    
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and "upload" in request.url.path:
+            content_length = request.headers.get("content-length")
+            
+            if content_length:
+                content_length = int(content_length)
+                
+                if "upload-strategy-package" in request.url.path:
+                    max_size = self.MAX_PACKAGE_SIZE
+                    max_size_mb = 50
+                else:
+                    max_size = self.MAX_UPLOAD_SIZE
+                    max_size_mb = 10
+                
+                if content_length > max_size:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": f"Request body too large. Maximum allowed size is {max_size_mb}MB",
+                            "status_code": 413,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "path": str(request.url.path),
+                            "received_size_mb": round(content_length / (1024 * 1024), 2),
+                            "max_size_mb": max_size_mb
+                        }
+                    )
+        
+        response = await call_next(request)
+        return response
+
+
+app.add_middleware(RequestSizeLimitMiddleware)
 
 
 @app.exception_handler(HTTPException)
@@ -1171,6 +1218,14 @@ async def upload_single_strategy(
     # Read file content
     try:
         content = await strategy_file.read()
+        
+        # Validate file size (10MB limit)
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail=f'File too large: {len(content) / (1024 * 1024):.2f}MB. Maximum size is 10MB'
+            )
+        
         code_str = content.decode('utf-8')
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail='File must be valid UTF-8 encoded text')
@@ -1288,6 +1343,13 @@ async def upload_strategy_package(
     
     # Read ZIP content
     content = await strategy_zip.read()
+    
+    # Validate file size (50MB limit for ZIP packages)
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f'ZIP file too large: {len(content) / (1024 * 1024):.2f}MB. Maximum size is 50MB'
+        )
     
     # Extract and validate in temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1421,6 +1483,7 @@ async def upload_multiple_files(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         uploaded_files = []
+        total_size = 0
         
         for file in files:
             # Validate file extension
@@ -1441,6 +1504,15 @@ async def upload_multiple_files(
             # Read and save file
             try:
                 content = await file.read()
+                
+                # Track total size (limit to 50MB total)
+                total_size += len(content)
+                if total_size > 50 * 1024 * 1024:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f'Total upload size too large: {total_size / (1024 * 1024):.2f}MB. Maximum is 50MB'
+                    )
+                
                 code_str = content.decode('utf-8')
             except UnicodeDecodeError:
                 raise HTTPException(
