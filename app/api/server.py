@@ -134,13 +134,11 @@ class AuthFailureRateLimiter(BaseHTTPMiddleware):
     MAX_FAILURES = 5
     FAILURE_WINDOW = 60
     BLOCK_DURATION = 300
-    CLEANUP_INTERVAL = 300
     
     def __init__(self, app):
         super().__init__(app)
         self._failures: Dict[str, List[float]] = defaultdict(list)
         self._blocked: Dict[str, float] = {}
-        self._last_cleanup = time.time()
     
     def _get_client_ip(self, request: Request) -> str:
         forwarded = request.headers.get("X-Forwarded-For")
@@ -148,55 +146,34 @@ class AuthFailureRateLimiter(BaseHTTPMiddleware):
             return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
     
-    def _cleanup_old_entries(self, current_time: float):
-        """Periodically remove expired entries to prevent memory growth."""
-        if current_time - self._last_cleanup < self.CLEANUP_INTERVAL:
-            return
-        
-        self._last_cleanup = current_time
+    def _clean_old_failures(self, ip: str, current_time: float):
+        """Remove failures outside the tracking window."""
         cutoff = current_time - self.FAILURE_WINDOW
-        
-        # Remove expired failure records
-        expired_ips = [
-            ip for ip, failures in self._failures.items()
-            if not failures or all(t < cutoff for t in failures)
-        ]
-        for ip in expired_ips:
+        self._failures[ip] = [t for t in self._failures[ip] if t > cutoff]
+        if not self._failures[ip]:
             del self._failures[ip]
-        
-        # Remove expired blocks
-        expired_blocks = [ip for ip, until in self._blocked.items() if current_time >= until]
-        for ip in expired_blocks:
-            del self._blocked[ip]
     
     def _is_blocked(self, ip: str, current_time: float) -> bool:
         """Check if IP is currently blocked."""
         if ip in self._blocked:
-            return current_time < self._blocked[ip]
+            if current_time < self._blocked[ip]:
+                return True
+            else:
+                del self._blocked[ip]
         return False
     
     def _record_failure(self, ip: str, current_time: float):
         """Record an auth failure and block if threshold exceeded."""
-        cutoff = current_time - self.FAILURE_WINDOW
+        self._clean_old_failures(ip, current_time)
+        self._failures[ip].append(current_time)
         
-        # Clean old failures for this IP and append new one
-        recent_failures = [t for t in self._failures[ip] if t > cutoff]
-        recent_failures.append(current_time)
-        
-        if len(recent_failures) >= self.MAX_FAILURES:
+        if len(self._failures[ip]) >= self.MAX_FAILURES:
             self._blocked[ip] = current_time + self.BLOCK_DURATION
-            # Clear failures once blocked
-            if ip in self._failures:
-                del self._failures[ip]
-        else:
-            self._failures[ip] = recent_failures
+            del self._failures[ip]
     
     async def dispatch(self, request: Request, call_next):
         client_ip = self._get_client_ip(request)
         current_time = time.time()
-        
-        # Periodic cleanup to prevent memory growth
-        self._cleanup_old_entries(current_time)
         
         if self._is_blocked(client_ip, current_time):
             remaining = int(self._blocked[client_ip] - current_time)
@@ -789,6 +766,75 @@ def get_leaderboard(request: Request):
         reverse=True,
     )
     return {"leaderboard": out}
+
+
+@app.get("/health")
+def health_check():
+    """System health check endpoint for monitoring and deployment.
+    
+    Returns system status including API responsiveness, data directory access,
+    and disk space availability. No authentication required.
+    """
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": {}
+    }
+    
+    # Check data directory access
+    try:
+        data_root = config.get_data_path("")
+        health_status["checks"]["data_directory"] = {
+            "status": "ok",
+            "path": str(data_root),
+            "accessible": data_root.exists()
+        }
+    except Exception as e:
+        health_status["status"] = "degraded"
+        health_status["checks"]["data_directory"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check disk space
+    try:
+        data_root = config.get_data_path("")
+        disk_usage = shutil.disk_usage(data_root)
+        free_gb = disk_usage.free / (1024 ** 3)
+        total_gb = disk_usage.total / (1024 ** 3)
+        used_percent = (disk_usage.used / disk_usage.total) * 100
+        
+        disk_status = "ok" if free_gb > 1.0 else "warning"
+        if disk_status == "warning":
+            health_status["status"] = "degraded"
+        
+        health_status["checks"]["disk_space"] = {
+            "status": disk_status,
+            "free_gb": round(free_gb, 2),
+            "total_gb": round(total_gb, 2),
+            "used_percent": round(used_percent, 2)
+        }
+    except Exception as e:
+        health_status["status"] = "degraded"
+        health_status["checks"]["disk_space"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check team count
+    try:
+        team_count = len(_list_team_ids())
+        health_status["checks"]["teams"] = {
+            "status": "ok",
+            "count": team_count
+        }
+    except Exception as e:
+        health_status["checks"]["teams"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    return health_status
 
 
 def _team_line(team_id: str) -> str:
