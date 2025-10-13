@@ -4,6 +4,17 @@
 
 ---
 
+## 📚 Documentation
+
+**New to QTC Alpha?** Start here:
+
+- **[DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)** - Quick reference to all documentation
+- **[SYSTEM_DOCUMENTATION.md](SYSTEM_DOCUMENTATION.md)** - Complete system guide with FAQ (rate limits, latency, etc.)
+- **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** - REST API reference with examples
+- **[strategy_starter/README.md](strategy_starter/README.md)** - Strategy development guide
+
+---
+
 ## 1) What You Get
 
 - Minute-aligned orchestrator with daily backfill (previous day)

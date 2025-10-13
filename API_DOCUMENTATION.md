@@ -1,7 +1,6 @@
 # QTC Alpha API Documentation
 
-**Version:** 1.0  
-**Base URL:** `http://your-server:8000` (or `https://your-domain.com` in production)  
+**Version:** Beta
 **Last Updated:** October 10, 2025
 
 ---
