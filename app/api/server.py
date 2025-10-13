@@ -84,6 +84,33 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    STANDARD_TIMEOUT = 30
+    UPLOAD_TIMEOUT = 60
+    
+    async def dispatch(self, request: Request, call_next):
+        if "upload" in request.url.path:
+            timeout = self.UPLOAD_TIMEOUT
+        else:
+            timeout = self.STANDARD_TIMEOUT
+        
+        try:
+            response = await asyncio.wait_for(call_next(request), timeout=timeout)
+            return response
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "error": f"Request timeout after {timeout} seconds",
+                    "status_code": 504,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "path": str(request.url.path),
+                    "timeout_seconds": timeout
+                }
+            )
+
+
+app.add_middleware(TimeoutMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
 
