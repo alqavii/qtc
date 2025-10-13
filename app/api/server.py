@@ -11,6 +11,8 @@ import uuid
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+import time
 from app.config.environments import config
 from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
@@ -122,6 +124,102 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class AuthFailureRateLimiter(BaseHTTPMiddleware):
+    """Rate limit authentication failures to prevent brute-force attacks.
+    
+    Tracks 401 Unauthorized responses per IP address. After 5 failures
+    within 60 seconds, blocks the IP for 5 minutes.
+    """
+    
+    MAX_FAILURES = 5
+    FAILURE_WINDOW = 60
+    BLOCK_DURATION = 300
+    CLEANUP_INTERVAL = 300
+    
+    def __init__(self, app):
+        super().__init__(app)
+        self._failures: Dict[str, List[float]] = defaultdict(list)
+        self._blocked: Dict[str, float] = {}
+        self._last_cleanup = time.time()
+    
+    def _get_client_ip(self, request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+    
+    def _cleanup_old_entries(self, current_time: float):
+        """Periodically remove expired entries to prevent memory growth."""
+        if current_time - self._last_cleanup < self.CLEANUP_INTERVAL:
+            return
+        
+        self._last_cleanup = current_time
+        cutoff = current_time - self.FAILURE_WINDOW
+        
+        # Remove expired failure records
+        expired_ips = [
+            ip for ip, failures in self._failures.items()
+            if not failures or all(t < cutoff for t in failures)
+        ]
+        for ip in expired_ips:
+            del self._failures[ip]
+        
+        # Remove expired blocks
+        expired_blocks = [ip for ip, until in self._blocked.items() if current_time >= until]
+        for ip in expired_blocks:
+            del self._blocked[ip]
+    
+    def _is_blocked(self, ip: str, current_time: float) -> bool:
+        """Check if IP is currently blocked."""
+        if ip in self._blocked:
+            return current_time < self._blocked[ip]
+        return False
+    
+    def _record_failure(self, ip: str, current_time: float):
+        """Record an auth failure and block if threshold exceeded."""
+        cutoff = current_time - self.FAILURE_WINDOW
+        
+        # Clean old failures for this IP and append new one
+        recent_failures = [t for t in self._failures[ip] if t > cutoff]
+        recent_failures.append(current_time)
+        
+        if len(recent_failures) >= self.MAX_FAILURES:
+            self._blocked[ip] = current_time + self.BLOCK_DURATION
+            # Clear failures once blocked
+            if ip in self._failures:
+                del self._failures[ip]
+        else:
+            self._failures[ip] = recent_failures
+    
+    async def dispatch(self, request: Request, call_next):
+        client_ip = self._get_client_ip(request)
+        current_time = time.time()
+        
+        # Periodic cleanup to prevent memory growth
+        self._cleanup_old_entries(current_time)
+        
+        if self._is_blocked(client_ip, current_time):
+            remaining = int(self._blocked[client_ip] - current_time)
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Too many authentication failures. Please try again later.",
+                    "status_code": 429,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "path": str(request.url.path),
+                    "retry_after_seconds": remaining
+                }
+            )
+        
+        response = await call_next(request)
+        
+        if response.status_code == 401:
+            self._record_failure(client_ip, current_time)
+        
+        return response
+
+
+app.add_middleware(AuthFailureRateLimiter)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(TimeoutMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
