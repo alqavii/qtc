@@ -2,6 +2,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
 from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from typing import Dict, Any, Optional, List
 import asyncio
 import threading
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from app.config.environments import config
 from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
+from app.telemetry.error_handler import error_handler_instance
 import shutil
 import tempfile
 import zipfile
@@ -25,6 +27,77 @@ app = FastAPI(title="QTC Alpha API", version="1.0")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTPException errors with consistent JSON responses.
+    
+    Catches all HTTPException errors (401, 404, 400, etc.) and returns
+    a standardized JSON response. Logs all errors to telemetry without
+    exposing stack traces to clients.
+    """
+    error_handler_instance.handle_system_error(
+        exc,
+        component=f"api:{request.url.path}"
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url.path)
+        }
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle request validation errors with detailed error messages.
+    
+    Catches FastAPI validation errors (invalid query params, missing fields,
+    type mismatches) and returns a 422 response with specific field-level
+    error details to help clients fix their requests.
+    """
+    error_handler_instance.handle_system_error(
+        exc,
+        component=f"api:{request.url.path}"
+    )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation error",
+            "status_code": 422,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url.path),
+            "details": exc.errors()
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Handle all uncaught exceptions with safe error responses.
+    
+    Catches any unhandled exceptions (KeyError, ValueError, etc.) and returns
+    a generic 500 error without exposing internal implementation details or
+    stack traces. Full exception details are logged to telemetry for debugging.
+    """
+    error_handler_instance.handle_system_error(
+        exc,
+        component=f"api:{request.url.path}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "status_code": 500,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url.path)
+        }
+    )
+
 
 # Enable simple, safe CORS so the frontend can fetch from browsers
 app.add_middleware(
@@ -1049,7 +1122,7 @@ def _update_team_registry(team_id: str, repo_dir: Path) -> None:
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy")
-@limiter.limit("10/hour")
+@limiter.limit("20/hour")
 async def upload_single_strategy(
     request: Request,
     team_id: str,
@@ -1134,7 +1207,7 @@ async def upload_single_strategy(
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy-package")
-@limiter.limit("10/hour")
+@limiter.limit("20/hour")
 async def upload_strategy_package(
     request: Request,
     team_id: str,
@@ -1290,7 +1363,7 @@ async def upload_strategy_package(
 
 
 @app.post("/api/v1/team/{team_id}/upload-multiple-files")
-@limiter.limit("10/hour")
+@limiter.limit("20/hour")
 async def upload_multiple_files(
     request: Request,
     team_id: str,
