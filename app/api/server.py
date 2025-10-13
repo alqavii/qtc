@@ -7,6 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from typing import Dict, Any, Optional, List
 import asyncio
+import uuid
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -110,9 +111,68 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
             )
 
 
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
+        
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        
+        return response
+
+
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(TimeoutMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
+
+
+def _categorize_error(status_code: int) -> str:
+    """Categorize error by status code for better logging and monitoring."""
+    if 400 <= status_code < 500:
+        if status_code == 400:
+            return "client_error.bad_request"
+        elif status_code == 401:
+            return "client_error.unauthorized"
+        elif status_code == 403:
+            return "client_error.forbidden"
+        elif status_code == 404:
+            return "client_error.not_found"
+        elif status_code == 413:
+            return "client_error.payload_too_large"
+        elif status_code == 422:
+            return "client_error.validation_error"
+        elif status_code == 429:
+            return "client_error.rate_limit_exceeded"
+        else:
+            return "client_error.other"
+    elif 500 <= status_code < 600:
+        if status_code == 500:
+            return "server_error.internal"
+        elif status_code == 502:
+            return "server_error.bad_gateway"
+        elif status_code == 503:
+            return "server_error.service_unavailable"
+        elif status_code == 504:
+            return "server_error.gateway_timeout"
+        else:
+            return "server_error.other"
+    else:
+        return "unknown_error"
+
+
+def _get_request_id(request: Request) -> str:
+    """Get request ID from request state, or generate one if missing."""
+    return getattr(request.state, "request_id", str(uuid.uuid4()))
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP from request headers or connection."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 @app.exception_handler(HTTPException)
@@ -123,17 +183,28 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     a standardized JSON response. Logs all errors to telemetry without
     exposing stack traces to clients.
     """
-    error_handler_instance.handle_system_error(
-        exc,
-        component=f"api:{request.url.path}"
+    request_id = _get_request_id(request)
+    client_ip = _get_client_ip(request)
+    error_category = _categorize_error(exc.status_code)
+    
+    error_handler_instance.handle_api_error(
+        error=exc,
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=exc.status_code,
+        client_ip=client_ip,
+        request_id=request_id,
+        error_category=error_category
     )
+    
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": exc.detail,
             "status_code": exc.status_code,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "path": str(request.url.path)
+            "path": str(request.url.path),
+            "request_id": request_id
         }
     )
 
@@ -146,10 +217,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     type mismatches) and returns a 422 response with specific field-level
     error details to help clients fix their requests.
     """
-    error_handler_instance.handle_system_error(
-        exc,
-        component=f"api:{request.url.path}"
+    request_id = _get_request_id(request)
+    client_ip = _get_client_ip(request)
+    error_category = _categorize_error(422)
+    
+    error_handler_instance.handle_api_error(
+        error=exc,
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=422,
+        client_ip=client_ip,
+        request_id=request_id,
+        error_category=error_category
     )
+    
     return JSONResponse(
         status_code=422,
         content={
@@ -157,6 +238,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "status_code": 422,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "path": str(request.url.path),
+            "request_id": request_id,
             "details": exc.errors()
         }
     )
@@ -170,17 +252,28 @@ async def generic_exception_handler(request: Request, exc: Exception):
     a generic 500 error without exposing internal implementation details or
     stack traces. Full exception details are logged to telemetry for debugging.
     """
-    error_handler_instance.handle_system_error(
-        exc,
-        component=f"api:{request.url.path}"
+    request_id = _get_request_id(request)
+    client_ip = _get_client_ip(request)
+    error_category = _categorize_error(500)
+    
+    error_handler_instance.handle_api_error(
+        error=exc,
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=500,
+        client_ip=client_ip,
+        request_id=request_id,
+        error_category=error_category
     )
+    
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
             "status_code": 500,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "path": str(request.url.path)
+            "path": str(request.url.path),
+            "request_id": request_id
         }
     )
 
