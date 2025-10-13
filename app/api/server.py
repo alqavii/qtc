@@ -1,6 +1,6 @@
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, Optional, List
 import asyncio
@@ -15,9 +15,16 @@ import tempfile
 import zipfile
 
 import json
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 
 app = FastAPI(title="QTC Alpha API", version="1.0")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Enable simple, safe CORS so the frontend can fetch from browsers
 app.add_middleware(
@@ -402,7 +409,8 @@ def _read_portfolio_history(
 
 
 @app.get("/leaderboard")
-def get_leaderboard():
+@limiter.limit("100/minute")
+def get_leaderboard(request: Request):
     out: List[Dict[str, Any]] = []
     for tid in _list_team_ids():
         team_dir = config.get_data_path(f"team/{tid}")
@@ -479,7 +487,8 @@ def _team_line(team_id: str) -> str:
 
 
 @app.get("/activity/recent")
-def get_activity_recent(limit: int = 100):
+@limiter.limit("100/minute")
+def get_activity_recent(request: Request, limit: int = 100):
     limit = max(1, min(limit, 500))
     return {"activity": get_recent_activity_entries(limit)}
 
@@ -523,7 +532,8 @@ async def stream_activity(request: Request):
 
 
 @app.get('/line/{team_key}')
-def get_team_status_by_team_key(team_key: str):
+@limiter.limit("200/minute")
+def get_team_status_by_team_key(request: Request, team_key: str):
     """Lookup team by API key and return JSON status (team_id, snapshot, metrics)."""
     team_id = auth_manager.findTeamByKey(team_key)
     if not team_id:
@@ -532,7 +542,9 @@ def get_team_status_by_team_key(team_key: str):
 
 
 @app.get("/api/v1/team/{team_id}/history")
+@limiter.limit("200/minute")
 def get_team_history(
+    request: Request,
     team_id: str,
     key: str = Query(..., description="Team API key for authentication"),
     days: Optional[int] = Query(7, description="Number of days to look back", ge=1, le=365),
@@ -584,7 +596,9 @@ def get_team_history(
 
 
 @app.get("/api/v1/leaderboard/history")
+@limiter.limit("100/minute")
 def get_leaderboard_history(
+    request: Request,
     days: Optional[int] = Query(7, description="Number of days to look back", ge=1, le=365),
     limit: Optional[int] = Query(500, description="Max data points per team", ge=1, le=5000)
 ):
@@ -798,7 +812,9 @@ def get_team_metrics(
 
 
 @app.get("/api/v1/leaderboard/metrics")
+@limiter.limit("100/minute")
 def get_leaderboard_with_metrics(
+    request: Request,
     days: Optional[int] = Query(None, description="Days to calculate metrics over (None = all)", ge=1, le=365),
     sort_by: str = Query("portfolio_value", description="Sort by: portfolio_value, sharpe_ratio, total_return, calmar_ratio")
 ):
@@ -1033,7 +1049,9 @@ def _update_team_registry(team_id: str, repo_dir: Path) -> None:
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy")
+@limiter.limit("10/hour")
 async def upload_single_strategy(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     strategy_file: UploadFile = File(..., description="strategy.py file")
@@ -1116,7 +1134,9 @@ async def upload_single_strategy(
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy-package")
+@limiter.limit("10/hour")
 async def upload_strategy_package(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     strategy_zip: UploadFile = File(..., description="ZIP file containing strategy.py and helper modules")
@@ -1270,7 +1290,9 @@ async def upload_strategy_package(
 
 
 @app.post("/api/v1/team/{team_id}/upload-multiple-files")
+@limiter.limit("10/hour")
 async def upload_multiple_files(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     files: List[UploadFile] = File(..., description="Multiple Python files (must include strategy.py)")
