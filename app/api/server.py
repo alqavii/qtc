@@ -1,31 +1,34 @@
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
-from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
-from typing import Dict, Any, Optional, List
-import asyncio
-import uuid
+
+import json
+import shutil
+import tempfile
 import threading
-from pathlib import Path
+import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
-from collections import defaultdict
-import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+from app.api.middleware import (
+    AuthFailureRateLimiter,
+    RequestIDMiddleware,
+    RequestSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    TimeoutMiddleware,
+)
 from app.config.environments import config
 from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
 from app.telemetry.error_handler import error_handler_instance
-import shutil
-import tempfile
-import zipfile
-
-import json
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-
 
 app = FastAPI(title="QTC Alpha API", version="1.0")
 
@@ -33,169 +36,7 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Middleware to enforce request body size limits.
-    
-    Prevents memory exhaustion from large uploads by checking Content-Length
-    header before reading the request body. Returns 413 Payload Too Large
-    for oversized requests.
-    """
-    
-    MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB for single files
-    MAX_PACKAGE_SIZE = 50 * 1024 * 1024  # 50MB for ZIP packages
-    
-    async def dispatch(self, request: Request, call_next):
-        if request.method == "POST" and "upload" in request.url.path:
-            content_length = request.headers.get("content-length")
-            
-            if content_length:
-                content_length = int(content_length)
-                
-                if "upload-strategy-package" in request.url.path:
-                    max_size = self.MAX_PACKAGE_SIZE
-                    max_size_mb = 50
-                else:
-                    max_size = self.MAX_UPLOAD_SIZE
-                    max_size_mb = 10
-                
-                if content_length > max_size:
-                    return JSONResponse(
-                        status_code=413,
-                        content={
-                            "error": f"Request body too large. Maximum allowed size is {max_size_mb}MB",
-                            "status_code": 413,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "path": str(request.url.path),
-                            "received_size_mb": round(content_length / (1024 * 1024), 2),
-                            "max_size_mb": max_size_mb
-                        }
-                    )
-        
-        response = await call_next(request)
-        return response
-
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        
-        return response
-
-
-class TimeoutMiddleware(BaseHTTPMiddleware):
-    STANDARD_TIMEOUT = 30
-    UPLOAD_TIMEOUT = 60
-    
-    async def dispatch(self, request: Request, call_next):
-        if "upload" in request.url.path:
-            timeout = self.UPLOAD_TIMEOUT
-        else:
-            timeout = self.STANDARD_TIMEOUT
-        
-        try:
-            response = await asyncio.wait_for(call_next(request), timeout=timeout)
-            return response
-        except asyncio.TimeoutError:
-            return JSONResponse(
-                status_code=504,
-                content={
-                    "error": f"Request timeout after {timeout} seconds",
-                    "status_code": 504,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "path": str(request.url.path),
-                    "timeout_seconds": timeout
-                }
-            )
-
-
-class RequestIDMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        request_id = str(uuid.uuid4())
-        request.state.request_id = request_id
-        
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        
-        return response
-
-
-class AuthFailureRateLimiter(BaseHTTPMiddleware):
-    """Rate limit authentication failures to prevent brute-force attacks.
-    
-    Tracks 401 Unauthorized responses per IP address. After 5 failures
-    within 60 seconds, blocks the IP for 5 minutes.
-    """
-    
-    MAX_FAILURES = 5
-    FAILURE_WINDOW = 60
-    BLOCK_DURATION = 300
-    
-    def __init__(self, app):
-        super().__init__(app)
-        self._failures: Dict[str, List[float]] = defaultdict(list)
-        self._blocked: Dict[str, float] = {}
-    
-    def _get_client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
-    
-    def _clean_old_failures(self, ip: str, current_time: float):
-        """Remove failures outside the tracking window."""
-        cutoff = current_time - self.FAILURE_WINDOW
-        self._failures[ip] = [t for t in self._failures[ip] if t > cutoff]
-        if not self._failures[ip]:
-            del self._failures[ip]
-    
-    def _is_blocked(self, ip: str, current_time: float) -> bool:
-        """Check if IP is currently blocked."""
-        if ip in self._blocked:
-            if current_time < self._blocked[ip]:
-                return True
-            else:
-                del self._blocked[ip]
-        return False
-    
-    def _record_failure(self, ip: str, current_time: float):
-        """Record an auth failure and block if threshold exceeded."""
-        self._clean_old_failures(ip, current_time)
-        self._failures[ip].append(current_time)
-        
-        if len(self._failures[ip]) >= self.MAX_FAILURES:
-            self._blocked[ip] = current_time + self.BLOCK_DURATION
-            del self._failures[ip]
-    
-    async def dispatch(self, request: Request, call_next):
-        client_ip = self._get_client_ip(request)
-        current_time = time.time()
-        
-        if self._is_blocked(client_ip, current_time):
-            remaining = int(self._blocked[client_ip] - current_time)
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "error": "Too many authentication failures. Please try again later.",
-                    "status_code": 429,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "path": str(request.url.path),
-                    "retry_after_seconds": remaining
-                }
-            )
-        
-        response = await call_next(request)
-        
-        if response.status_code == 401:
-            self._record_failure(client_ip, current_time)
-        
-        return response
-
-
+# Register middleware (execution order is reverse of registration)
 app.add_middleware(AuthFailureRateLimiter)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(TimeoutMiddleware)
@@ -1494,14 +1335,6 @@ async def upload_single_strategy(
     # Read file content
     try:
         content = await strategy_file.read()
-        
-        # Validate file size (10MB limit)
-        if len(content) > 10 * 1024 * 1024:
-            raise HTTPException(
-                status_code=413,
-                detail=f'File too large: {len(content) / (1024 * 1024):.2f}MB. Maximum size is 10MB'
-            )
-        
         code_str = content.decode('utf-8')
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail='File must be valid UTF-8 encoded text')
@@ -1619,13 +1452,6 @@ async def upload_strategy_package(
     
     # Read ZIP content
     content = await strategy_zip.read()
-    
-    # Validate file size (50MB limit for ZIP packages)
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(
-            status_code=413,
-            detail=f'ZIP file too large: {len(content) / (1024 * 1024):.2f}MB. Maximum size is 50MB'
-        )
     
     # Extract and validate in temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1759,7 +1585,6 @@ async def upload_multiple_files(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         uploaded_files = []
-        total_size = 0
         
         for file in files:
             # Validate file extension
@@ -1780,15 +1605,6 @@ async def upload_multiple_files(
             # Read and save file
             try:
                 content = await file.read()
-                
-                # Track total size (limit to 50MB total)
-                total_size += len(content)
-                if total_size > 50 * 1024 * 1024:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f'Total upload size too large: {total_size / (1024 * 1024):.2f}MB. Maximum is 50MB'
-                    )
-                
                 code_str = content.decode('utf-8')
             except UnicodeDecodeError:
                 raise HTTPException(

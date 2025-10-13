@@ -57,14 +57,6 @@ class ErrorHandler:
         status_code: Optional[int] = None,
         client_ip: Optional[str] = None
     ) -> None:
-        """Record an API error with request context.
-        
-        Args:
-            error: The exception that occurred
-            endpoint: API endpoint path (e.g., '/api/v1/team/test1/history')
-            status_code: HTTP status code (e.g., 400, 401, 500)
-            client_ip: IP address of the client making the request
-        """
         context = {}
         if endpoint:
             context["endpoint"] = endpoint
