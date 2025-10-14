@@ -196,9 +196,11 @@ api.getRangeMulti(["AAPL","MSFT"], start_dt, end_dt)
 
 Safety model:
 - Only returns are accepted (no side effects)
-- Import allowlist: numpy, pandas, scipy, plus safe stdlib (math, statistics, decimal, collections, typing)
-- Blocked builtins in uploaded code: `open`, `exec`, `eval`, `__import__`
+- Import blacklist: 65 dangerous modules blocked (os, subprocess, requests, socket, pickle, sys, etc.) - all others allowed
+- Blocked builtins: `open`, `exec`, `eval`, `__import__`
+- File size limits: 10 MB per file, 50 MB for ZIP uploads
 - Each call runs in a thread with 5s timeout; errors are logged and isolated by team
+- Rate limited: 2-3 uploads per minute per IP
 
 ---
 

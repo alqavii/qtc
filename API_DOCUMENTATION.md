@@ -1,7 +1,7 @@
 # QTC Alpha API Documentation
 
 **Version:** Beta
-**Last Updated:** October 13, 2025
+**Last Updated:** October 14, 2025
 
 ---
 
@@ -707,33 +707,83 @@ const response = await fetch(
 
 #### Security Validation
 
-All uploaded files are automatically validated for security:
+All uploaded files are automatically validated for security using a **blacklist approach** - you can import any library except those explicitly blocked for security reasons.
 
-**✅ Allowed Imports:**
-- **Data Processing:** `numpy`, `pandas`, `scipy`
-- **Mathematics:** `math`, `statistics`, `decimal`
-- **Standard Library:** `collections`, `typing`
+**✅ ALLOWED - Import freely:**
+- **Data Science:** `numpy`, `pandas`, `scipy`, `scikit-learn`, `statsmodels`
+- **Technical Analysis:** `ta`, `ta-lib` (if available)
+- **Mathematics:** `math`, `cmath`, `statistics`, `decimal`, `fractions`, `random`
+- **Data Structures:** `collections`, `heapq`, `bisect`, `array`, `queue`, `dataclasses`, `enum`, `typing`
+- **String/Text:** `string`, `re`, `difflib`, `textwrap`
+- **Date/Time:** `datetime`, `time`, `calendar`, `zoneinfo`
+- **Algorithms:** `itertools`, `functools`, `operator`, `copy`
+- **And most other Python libraries not in the blacklist below**
 
-**❌ Blocked Operations:**
-- **Network Access:** `requests`, `urllib`, `socket`, `http`
-- **File I/O:** `open()`, file operations
-- **System Calls:** `subprocess`, `os.system`, `eval()`, `exec()`
-- **Dynamic Imports:** `__import__()`, `importlib` (for user code)
+**❌ BLACKLISTED IMPORTS (65 modules):**
 
-**Validation Checks:**
+Security risks - these imports will cause your strategy to be rejected:
+
+| Category | Blocked Modules | Reason |
+|----------|----------------|---------|
+| **Process Control** | `os`, `subprocess`, `multiprocessing` | System access |
+| **Dynamic Execution** | `importlib`, `pkgutil`, `runpy`, `code`, `codeop` | Code injection |
+| **File System** | `shutil`, `tempfile`, `pathlib`, `glob`, `fnmatch` | Unauthorized file access |
+| **Network** | `socket`, `urllib`, `urllib3`, `requests`, `http`, `ftplib`, `smtplib`, `poplib`, `imaplib`, `telnetlib`, `socketserver` | External communication |
+| **Serialization** | `pickle`, `shelve`, `marshal`, `dill` | RCE vulnerabilities |
+| **System Info** | `sys`, `ctypes`, `cffi`, `platform`, `pwd`, `grp`, `resource` | System introspection |
+| **Compiler/AST** | `ast`, `compile`, `dis`, `inspect` | Code manipulation |
+| **Database** | `sqlite3`, `dbm` | File system writes |
+| **Cloud APIs** | `boto3`, `botocore`, `azure`, `google`, `kubernetes`, `docker` | External services |
+| **Web Scraping** | `selenium`, `scrapy` | External access |
+| **GUI** | `tkinter`, `pygame` | Resource intensive |
+| **Other** | `webbrowser`, `xmlrpc`, `pty`, `tty`, `readline`, `rlcompleter`, `pdb`, `trace`, `traceback`, `warnings`, `logging`, `builtins`, `gc`, `weakref` | Various security/stability |
+
+**❌ BLOCKED BUILTIN FUNCTIONS:**
+- `open()` - File I/O
+- `exec()` - Dynamic code execution
+- `eval()` - Dynamic code evaluation
+- `__import__()` - Dynamic imports
+
+**📏 FILE SIZE LIMITS:**
+- **Single file upload:** 10 MB maximum
+- **ZIP file upload:** 50 MB maximum (compressed)
+- **Total extracted:** 100 MB maximum (uncompressed)
+- **Individual files in ZIP:** 10 MB each
+
+**⏱️ RATE LIMITS:**
+- **Upload endpoints:** 2-3 requests per minute per IP
+- **Other endpoints:** See [Rate Limits section](#rate-limits--best-practices)
+
+**🔒 VALIDATION CHECKS:**
 1. File type validation (.py or .zip only)
 2. UTF-8 encoding verification
 3. Python syntax checking (AST parsing)
-4. Import whitelist enforcement
-5. Path traversal prevention (for ZIP uploads)
-6. File size limits (10 MB per file in ZIP)
-7. Dangerous operation blocking
+4. Import blacklist enforcement (rejects dangerous imports)
+5. Dangerous builtin blocking (`open`, `exec`, `eval`, `__import__`)
+6. Path traversal prevention (for ZIP uploads)
+7. File size validation (10 MB/50 MB/100 MB limits)
+8. ZIP bomb protection (checks uncompressed size)
 
 **Error Examples:**
 ```json
-// Invalid import
+// Blacklisted import
 {
-  "detail": "Validation failed: Disallowed import: requests in strategy.py"
+  "detail": "Validation failed: Blacklisted import: requests in strategy.py"
+}
+
+// File too large
+{
+  "detail": "File too large. Maximum size is 10 MB"
+}
+
+// ZIP too large
+{
+  "detail": "ZIP file too large. Maximum size is 50 MB"
+}
+
+// Rate limit exceeded
+{
+  "error": "Rate limit exceeded: 3 per 1 minute"
 }
 
 // Missing strategy.py
@@ -743,7 +793,12 @@ All uploaded files are automatically validated for security:
 
 // Path traversal attempt
 {
-  "detail": "Invalid file path in ZIP: ../../../etc/passwd"
+  "detail": "Invalid file path in ZIP: ../../../etc/passwd. Paths must be relative and not use .."
+}
+
+// Dangerous builtin
+{
+  "detail": "Validation failed: Disallowed builtin call 'open' in strategy.py"
 }
 ```
 
@@ -1345,22 +1400,59 @@ Save this as `index.html` and open in a browser. It will display:
 
 ## Rate Limits & Best Practices
 
+### Enforced Rate Limits
+
+The API enforces rate limits to prevent abuse and ensure fair usage. Limits are applied **per IP address**.
+
+| Endpoint | Method | Rate Limit | Purpose |
+|----------|--------|------------|---------|
+| `/api/v1/team/{team_id}/upload-strategy` | POST | **3 per minute** | Prevent storage abuse |
+| `/api/v1/team/{team_id}/upload-strategy-package` | POST | **2 per minute** | Large file uploads |
+| `/api/v1/team/{team_id}/upload-multiple-files` | POST | **2 per minute** | Multiple file uploads |
+| `/api/v1/leaderboard/history` | GET | **10 per minute** | Expensive query (all teams) |
+| `/api/v1/leaderboard/metrics` | GET | **10 per minute** | Heavy computation |
+| `/api/v1/team/{team_id}/history` | GET | **30 per minute** | Moderate load |
+| `/api/v1/team/{team_id}/metrics` | GET | **30 per minute** | Moderate computation |
+| `/api/v1/team/{team_id}/trades` | GET | **30 per minute** | File reads |
+| `/leaderboard` | GET | **60 per minute** | Simple read |
+| **All endpoints (default)** | ALL | **100 per minute** | Global safety net |
+
+**Rate Limit Headers:**
+
+Every response includes rate limit headers:
+```http
+X-RateLimit-Limit: 3
+X-RateLimit-Remaining: 2
+X-RateLimit-Reset: 1697234567
+```
+
+**Rate Limit Exceeded Response:**
+```json
+HTTP/1.1 429 Too Many Requests
+{
+  "error": "Rate limit exceeded: 3 per 1 minute"
+}
+```
+
 ### Recommended Polling Intervals
 
-| Endpoint | Recommended Interval | Max Frequency |
-|----------|---------------------|---------------|
-| `/leaderboard` | 60 seconds | 10 seconds |
-| `/api/v1/leaderboard/history` | 60 seconds | 30 seconds |
-| `/api/v1/team/{team_id}/history` | 60 seconds | 30 seconds |
-| `/activity/stream` | Keep connection open | N/A (SSE) |
+| Endpoint | Recommended Interval | Notes |
+|----------|---------------------|-------|
+| `/leaderboard` | 60 seconds | Updates every minute during market hours |
+| `/api/v1/leaderboard/history` | 5-10 minutes | Historical data, changes slowly |
+| `/api/v1/team/{team_id}/history` | 60 seconds | Team-specific updates |
+| `/activity/stream` | Keep connection open | Use SSE, don't poll |
 
 ### Best Practices
 
-1. **Use SSE for real-time updates** instead of polling `/activity/recent`
-2. **Cache historical data** - it doesn't change once written
-3. **Limit data points** - use the `limit` parameter to reduce payload size
-4. **Handle errors gracefully** - API may be unavailable during restarts
-5. **Don't expose API keys in public frontend code** - use backend proxy for team-specific data
+1. **Respect rate limits** - Check `X-RateLimit-Remaining` header before making requests
+2. **Use SSE for real-time updates** instead of polling `/activity/recent`
+3. **Cache historical data** - it doesn't change once written
+4. **Implement exponential backoff** - When you hit 429, wait before retrying
+5. **Limit data points** - Use the `limit` parameter to reduce payload size
+6. **Handle errors gracefully** - API may be unavailable during restarts
+7. **Don't expose API keys in frontend code** - Use backend proxy for team-specific data
+8. **Batch upload attempts** - Don't retry uploads immediately on failure
 
 ### Performance Tips
 
@@ -1368,6 +1460,58 @@ Save this as `index.html` and open in a browser. It will display:
 - For charts, 500-1000 data points is usually sufficient
 - Historical data older than 1 day is cached in parquet files (faster)
 - Use compression (gzip) if your client supports it
+- Monitor rate limit headers to avoid hitting limits
+
+### Handling Rate Limits in Code
+
+**JavaScript Example:**
+```javascript
+async function fetchWithRateLimit(url) {
+  const response = await fetch(url);
+  
+  // Check rate limit headers
+  const remaining = response.headers.get('X-RateLimit-Remaining');
+  const reset = response.headers.get('X-RateLimit-Reset');
+  
+  if (response.status === 429) {
+    const resetTime = new Date(reset * 1000);
+    const waitMs = resetTime - Date.now();
+    console.log(`Rate limited. Waiting ${waitMs}ms...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+    return fetchWithRateLimit(url); // Retry
+  }
+  
+  if (remaining && parseInt(remaining) < 3) {
+    console.warn(`Rate limit warning: ${remaining} requests remaining`);
+  }
+  
+  return response.json();
+}
+```
+
+**Python Example:**
+```python
+import time
+import requests
+
+def fetch_with_rate_limit(url):
+    response = requests.get(url)
+    
+    # Check rate limit headers
+    remaining = int(response.headers.get('X-RateLimit-Remaining', 999))
+    reset = int(response.headers.get('X-RateLimit-Reset', 0))
+    
+    if response.status_code == 429:
+        wait_time = max(reset - time.time(), 60)
+        print(f"Rate limited. Waiting {wait_time}s...")
+        time.sleep(wait_time)
+        return fetch_with_rate_limit(url)  # Retry
+    
+    if remaining < 3:
+        print(f"Rate limit warning: {remaining} requests remaining")
+    
+    return response.json()
+```
 
 ---
 
@@ -1378,9 +1522,10 @@ Save this as `index.html` and open in a browser. It will display:
 | Code | Meaning | Common Causes |
 |------|---------|---------------|
 | 200 | Success | Request completed successfully |
-| 400 | Bad Request | Invalid parameters |
+| 400 | Bad Request | Invalid parameters, file too large, blacklisted import |
 | 401 | Unauthorized | Invalid or missing API key |
 | 404 | Not Found | Team ID or endpoint doesn't exist |
+| 429 | Too Many Requests | Rate limit exceeded - wait before retrying |
 | 500 | Server Error | Internal server error |
 
 ### Error Response Format

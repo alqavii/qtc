@@ -1,4 +1,3 @@
-from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,8 +15,23 @@ import zipfile
 
 import json
 
+# Rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 
 app = FastAPI(title="QTC Alpha API", version="1.0")
+
+# Configure rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# File size limits (in bytes)
+MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024     # 50 MB
+MAX_TOTAL_EXTRACTED_SIZE = 100 * 1024 * 1024  # 100 MB total extracted
 
 # Enable simple, safe CORS so the frontend can fetch from browsers
 app.add_middleware(
@@ -402,7 +416,8 @@ def _read_portfolio_history(
 
 
 @app.get("/leaderboard")
-def get_leaderboard():
+@limiter.limit("60/minute")
+def get_leaderboard(request: Request):
     out: List[Dict[str, Any]] = []
     for tid in _list_team_ids():
         team_dir = config.get_data_path(f"team/{tid}")
@@ -532,7 +547,9 @@ def get_team_status_by_team_key(team_key: str):
 
 
 @app.get("/api/v1/team/{team_id}/history")
+@limiter.limit("30/minute")
 def get_team_history(
+    request: Request,
     team_id: str,
     key: str = Query(..., description="Team API key for authentication"),
     days: Optional[int] = Query(7, description="Number of days to look back", ge=1, le=365),
@@ -584,7 +601,9 @@ def get_team_history(
 
 
 @app.get("/api/v1/leaderboard/history")
+@limiter.limit("10/minute")
 def get_leaderboard_history(
+    request: Request,
     days: Optional[int] = Query(7, description="Number of days to look back", ge=1, le=365),
     limit: Optional[int] = Query(500, description="Max data points per team", ge=1, le=5000)
 ):
@@ -635,7 +654,9 @@ def get_leaderboard_history(
 
 
 @app.get("/api/v1/team/{team_id}/trades")
+@limiter.limit("30/minute")
 def get_team_trades(
+    request: Request,
     team_id: str,
     key: str = Query(..., description="Team API key for authentication"),
     limit: Optional[int] = Query(100, description="Maximum number of trades", ge=1, le=1000)
@@ -707,7 +728,9 @@ def get_team_trades(
 
 
 @app.get("/api/v1/team/{team_id}/metrics")
+@limiter.limit("30/minute")
 def get_team_metrics(
+    request: Request,
     team_id: str,
     key: str = Query(..., description="Team API key for authentication"),
     days: Optional[int] = Query(None, description="Days to calculate metrics over (None = all data)", ge=1, le=365)
@@ -798,7 +821,9 @@ def get_team_metrics(
 
 
 @app.get("/api/v1/leaderboard/metrics")
+@limiter.limit("10/minute")
 def get_leaderboard_with_metrics(
+    request: Request,
     days: Optional[int] = Query(None, description="Days to calculate metrics over (None = all)", ge=1, le=365),
     sort_by: str = Query("portfolio_value", description="Sort by: portfolio_value, sharpe_ratio, total_return, calmar_ratio")
 ):
@@ -1033,7 +1058,9 @@ def _update_team_registry(team_id: str, repo_dir: Path) -> None:
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy")
+@limiter.limit("3/minute")
 async def upload_single_strategy(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     strategy_file: UploadFile = File(..., description="strategy.py file")
@@ -1049,6 +1076,9 @@ async def upload_single_strategy(
     - `team_id`: Team identifier
     - `key`: Team API key (form field)
     - `strategy_file`: Python file to upload (must be named strategy.py)
+    
+    **File Size Limits:**
+    - Maximum file size: 10 MB
     
     **Example using curl:**
     ```bash
@@ -1077,9 +1107,17 @@ async def upload_single_strategy(
     if not strategy_file.filename.endswith('.py'):
         raise HTTPException(status_code=400, detail='File must be a Python (.py) file')
     
-    # Read file content
+    # Read file content with size check
     try:
         content = await strategy_file.read()
+        
+        # Check file size
+        if len(content) > MAX_SINGLE_FILE_SIZE:
+            raise HTTPException(
+                status_code=400, 
+                detail=f'File too large. Maximum size is {MAX_SINGLE_FILE_SIZE / (1024*1024):.0f} MB'
+            )
+        
         code_str = content.decode('utf-8')
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail='File must be valid UTF-8 encoded text')
@@ -1116,7 +1154,9 @@ async def upload_single_strategy(
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy-package")
+@limiter.limit("2/minute")
 async def upload_strategy_package(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     strategy_zip: UploadFile = File(..., description="ZIP file containing strategy.py and helper modules")
@@ -1128,6 +1168,10 @@ async def upload_strategy_package(
     - Any number of additional .py files (helpers, utilities, etc.)
     
     **Authentication:** Requires team API key
+    
+    **File Size Limits:**
+    - Maximum ZIP file size: 50 MB
+    - Maximum total extracted size: 100 MB
     
     **Parameters:**
     - `team_id`: Team identifier
@@ -1196,6 +1240,13 @@ async def upload_strategy_package(
     # Read ZIP content
     content = await strategy_zip.read()
     
+    # Check ZIP file size
+    if len(content) > MAX_ZIP_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'ZIP file too large. Maximum size is {MAX_ZIP_FILE_SIZE / (1024*1024):.0f} MB'
+        )
+    
     # Extract and validate in temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -1205,6 +1256,14 @@ async def upload_strategy_package(
         try:
             # Extract ZIP with security checks
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Check total uncompressed size (prevent zip bombs)
+                total_size = sum(info.file_size for info in zip_ref.infolist())
+                if total_size > MAX_TOTAL_EXTRACTED_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f'Total extracted size too large. Maximum is {MAX_TOTAL_EXTRACTED_SIZE / (1024*1024):.0f} MB'
+                    )
+                
                 # Security: Check for path traversal attempts
                 for member in zip_ref.namelist():
                     # Normalize the path
@@ -1217,12 +1276,12 @@ async def upload_strategy_package(
                             detail=f'Invalid file path in ZIP: {member}. Paths must be relative and not use ..'
                         )
                     
-                    # Check file size (prevent zip bombs)
+                    # Check individual file size (prevent zip bombs)
                     info = zip_ref.getinfo(member)
-                    if info.file_size > 10 * 1024 * 1024:  # 10 MB limit per file
+                    if info.file_size > MAX_SINGLE_FILE_SIZE:
                         raise HTTPException(
                             status_code=400,
-                            detail=f'File {member} is too large (max 10 MB per file)'
+                            detail=f'File {member} is too large (max {MAX_SINGLE_FILE_SIZE / (1024*1024):.0f} MB per file)'
                         )
                 
                 # Extract to temporary location
@@ -1270,7 +1329,9 @@ async def upload_strategy_package(
 
 
 @app.post("/api/v1/team/{team_id}/upload-multiple-files")
+@limiter.limit("2/minute")
 async def upload_multiple_files(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     files: List[UploadFile] = File(..., description="Multiple Python files (must include strategy.py)")
@@ -1346,6 +1407,14 @@ async def upload_multiple_files(
             # Read and save file
             try:
                 content = await file.read()
+                
+                # Check file size
+                if len(content) > MAX_SINGLE_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f'File {filename} is too large. Maximum size is {MAX_SINGLE_FILE_SIZE / (1024*1024):.0f} MB'
+                    )
+                
                 code_str = content.decode('utf-8')
             except UnicodeDecodeError:
                 raise HTTPException(
