@@ -4,8 +4,18 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
-from app.api.server import limiter
+
+# Create a module-level limiter for tests that don't need isolation
+limiter = Limiter(key_func=get_remote_address)
+
+
+@pytest.fixture
+def fresh_limiter():
+    """Create a fresh limiter instance for each test."""
+    return Limiter(key_func=get_remote_address)
 
 
 class TestPublicEndpointRateLimits:
@@ -25,11 +35,12 @@ class TestPublicEndpointRateLimits:
             response = client.get("/test")
             assert response.status_code == 200
     
-    def test_public_endpoint_at_limit(self):
+    def test_public_endpoint_at_limit(self, fresh_limiter):
         app = FastAPI()
+        app.state.limiter = fresh_limiter
         
-        @app.get("/test")
-        @limiter.limit("100/minute")
+        @app.get("/test2")
+        @fresh_limiter.limit("100/minute")
         async def test_endpoint(request: Request):
             return {"status": "ok"}
         
@@ -37,14 +48,15 @@ class TestPublicEndpointRateLimits:
         
         # Make exactly 100 requests
         for i in range(100):
-            response = client.get("/test")
+            response = client.get("/test2")
             assert response.status_code == 200, f"Request {i+1} failed"
     
-    def test_public_endpoint_over_limit(self):
+    def test_public_endpoint_over_limit(self, fresh_limiter):
         app = FastAPI()
+        app.state.limiter = fresh_limiter
         
-        @app.get("/test")
-        @limiter.limit("100/minute")
+        @app.get("/test3")
+        @fresh_limiter.limit("100/minute")
         async def test_endpoint(request: Request):
             return {"status": "ok"}
         
@@ -52,21 +64,23 @@ class TestPublicEndpointRateLimits:
         
         # Make 100 successful requests
         for _ in range(100):
-            client.get("/test")
+            client.get("/test3")
         
         # 101st should be rate limited
-        response = client.get("/test")
+        response = client.get("/test3")
         assert response.status_code == 429
-        assert "rate limit" in response.text.lower()
+        # Check for rate limit info in response (detail field contains limit info)
+        assert "100 per 1 minute" in response.text or "rate limit" in response.text.lower()
 
 
 class TestTeamEndpointRateLimits:
     
-    def test_team_endpoint_under_limit(self):
+    def test_team_endpoint_under_limit(self, fresh_limiter):
         app = FastAPI()
+        app.state.limiter = fresh_limiter
         
-        @app.get("/team/{team_id}/test")
-        @limiter.limit("200/minute")
+        @app.get("/team2/{team_id}/test")
+        @fresh_limiter.limit("200/minute")
         async def test_endpoint(request: Request, team_id: str):
             return {"status": "ok", "team_id": team_id}
         
@@ -74,14 +88,15 @@ class TestTeamEndpointRateLimits:
         
         # Make 100 requests - should all succeed
         for _ in range(100):
-            response = client.get("/team/test1/test")
+            response = client.get("/team2/test1/test")
             assert response.status_code == 200
     
-    def test_team_endpoint_at_limit(self):
+    def test_team_endpoint_at_limit(self, fresh_limiter):
         app = FastAPI()
+        app.state.limiter = fresh_limiter
         
-        @app.get("/team/{team_id}/test")
-        @limiter.limit("200/minute")
+        @app.get("/team3/{team_id}/test")
+        @fresh_limiter.limit("200/minute")
         async def test_endpoint(request: Request, team_id: str):
             return {"status": "ok"}
         
@@ -89,7 +104,7 @@ class TestTeamEndpointRateLimits:
         
         # Make exactly 200 requests
         for i in range(200):
-            response = client.get("/team/test1/test")
+            response = client.get("/team3/test1/test")
             assert response.status_code == 200, f"Request {i+1} failed"
     
     def test_team_endpoint_over_limit(self):
@@ -145,11 +160,12 @@ class TestTeamEndpointRateLimits:
             response = client.post("/team/test1/upload-strategy")
             assert response.status_code == 200
     
-    def test_upload_endpoint_at_limit(self):
+    def test_upload_endpoint_at_limit(self, fresh_limiter):
         app = FastAPI()
+        app.state.limiter = fresh_limiter
         
-        @app.post("/team/{team_id}/upload-strategy")
-        @limiter.limit("20/hour")
+        @app.post("/team/{team_id}/upload-strategy2")
+        @fresh_limiter.limit("20/hour")
         async def upload_endpoint(request: Request, team_id: str):
             return {"status": "uploaded"}
         
@@ -157,7 +173,7 @@ class TestTeamEndpointRateLimits:
         
         # Make exactly 20 requests
         for i in range(20):
-            response = client.post("/team/test1/upload-strategy")
+            response = client.post("/team/test1/upload-strategy2")
             assert response.status_code == 200, f"Request {i+1} failed"
     
     def test_upload_endpoint_over_limit(self):

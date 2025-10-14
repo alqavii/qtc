@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import tempfile
 import threading
 import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,6 +20,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app.api.lifecycle import lifecycle
 from app.api.middleware import (
     AuthFailureRateLimiter,
     RequestIDMiddleware,
@@ -30,7 +33,17 @@ from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
 from app.telemetry.error_handler import error_handler_instance
 
-app = FastAPI(title="QTC Alpha API", version="1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown lifecycle events."""
+    data_root = config.get_data_path("")
+    await lifecycle.startup(data_root)
+    yield
+    await lifecycle.shutdown()
+
+
+app = FastAPI(title="QTC Alpha API", version="1.0", lifespan=lifespan)
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -616,6 +629,16 @@ def health_check():
     Returns system status including API responsiveness, data directory access,
     and disk space availability. No authentication required.
     """
+    if lifecycle.is_shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "shutting_down",
+                "message": "Server is gracefully shutting down",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        )
+    
     health_status = {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -735,6 +758,9 @@ async def stream_activity(request: Request):
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[str] = asyncio.Queue()
     stop_event = threading.Event()
+    
+    # Track this connection for graceful shutdown
+    lifecycle.track_sse_connection(queue)
 
     def pump() -> None:
         try:
@@ -764,6 +790,7 @@ async def stream_activity(request: Request):
         finally:
             stop_event.set()
             thread.join(timeout=1)
+            lifecycle.untrack_sse_connection(queue)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
