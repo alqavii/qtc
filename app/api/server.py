@@ -1,23 +1,211 @@
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
-from fastapi.responses import PlainTextResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any, Optional, List
+
 import asyncio
+import json
+import shutil
+import tempfile
 import threading
-from pathlib import Path
+import uuid
+import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+from app.api.lifecycle import lifecycle
+from app.api.middleware import (
+    AuthFailureRateLimiter,
+    RequestIDMiddleware,
+    RequestSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    TimeoutMiddleware,
+)
 from app.config.environments import config
 from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
-import shutil
-import tempfile
-import zipfile
-
-import json
+from app.telemetry.error_handler import error_handler_instance
 
 
-app = FastAPI(title="QTC Alpha API", version="1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown lifecycle events."""
+    data_root = config.get_data_path("")
+    await lifecycle.startup(data_root)
+    yield
+    await lifecycle.shutdown()
+
+
+app = FastAPI(title="QTC Alpha API", version="1.0", lifespan=lifespan)
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Register middleware (execution order is reverse of registration)
+app.add_middleware(AuthFailureRateLimiter)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(TimeoutMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
+
+
+def _categorize_error(status_code: int) -> str:
+    """Categorize error by status code for better logging and monitoring."""
+    if 400 <= status_code < 500:
+        if status_code == 400:
+            return "client_error.bad_request"
+        elif status_code == 401:
+            return "client_error.unauthorized"
+        elif status_code == 403:
+            return "client_error.forbidden"
+        elif status_code == 404:
+            return "client_error.not_found"
+        elif status_code == 413:
+            return "client_error.payload_too_large"
+        elif status_code == 422:
+            return "client_error.validation_error"
+        elif status_code == 429:
+            return "client_error.rate_limit_exceeded"
+        else:
+            return "client_error.other"
+    elif 500 <= status_code < 600:
+        if status_code == 500:
+            return "server_error.internal"
+        elif status_code == 502:
+            return "server_error.bad_gateway"
+        elif status_code == 503:
+            return "server_error.service_unavailable"
+        elif status_code == 504:
+            return "server_error.gateway_timeout"
+        else:
+            return "server_error.other"
+    else:
+        return "unknown_error"
+
+
+def _get_request_id(request: Request) -> str:
+    """Get request ID from request state, or generate one if missing."""
+    return getattr(request.state, "request_id", str(uuid.uuid4()))
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP from request headers or connection."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTPException errors with consistent JSON responses.
+    
+    Catches all HTTPException errors (401, 404, 400, etc.) and returns
+    a standardized JSON response. Logs all errors to telemetry without
+    exposing stack traces to clients.
+    """
+    request_id = _get_request_id(request)
+    client_ip = _get_client_ip(request)
+    error_category = _categorize_error(exc.status_code)
+    
+    error_handler_instance.handle_api_error(
+        error=exc,
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=exc.status_code,
+        client_ip=client_ip,
+        request_id=request_id,
+        error_category=error_category
+    )
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url.path),
+            "request_id": request_id
+        }
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle request validation errors with detailed error messages.
+    
+    Catches FastAPI validation errors (invalid query params, missing fields,
+    type mismatches) and returns a 422 response with specific field-level
+    error details to help clients fix their requests.
+    """
+    request_id = _get_request_id(request)
+    client_ip = _get_client_ip(request)
+    error_category = _categorize_error(422)
+    
+    error_handler_instance.handle_api_error(
+        error=exc,
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=422,
+        client_ip=client_ip,
+        request_id=request_id,
+        error_category=error_category
+    )
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation error",
+            "status_code": 422,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url.path),
+            "request_id": request_id,
+            "details": exc.errors()
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Handle all uncaught exceptions with safe error responses.
+    
+    Catches any unhandled exceptions (KeyError, ValueError, etc.) and returns
+    a generic 500 error without exposing internal implementation details or
+    stack traces. Full exception details are logged to telemetry for debugging.
+    """
+    request_id = _get_request_id(request)
+    client_ip = _get_client_ip(request)
+    error_category = _categorize_error(500)
+    
+    error_handler_instance.handle_api_error(
+        error=exc,
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=500,
+        client_ip=client_ip,
+        request_id=request_id,
+        error_category=error_category
+    )
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "status_code": 500,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url.path),
+            "request_id": request_id
+        }
+    )
+
 
 # Enable simple, safe CORS so the frontend can fetch from browsers
 app.add_middleware(
@@ -402,7 +590,8 @@ def _read_portfolio_history(
 
 
 @app.get("/leaderboard")
-def get_leaderboard():
+@limiter.limit("100/minute")
+def get_leaderboard(request: Request):
     out: List[Dict[str, Any]] = []
     for tid in _list_team_ids():
         team_dir = config.get_data_path(f"team/{tid}")
@@ -431,6 +620,85 @@ def get_leaderboard():
         reverse=True,
     )
     return {"leaderboard": out}
+
+
+@app.get("/health")
+def health_check():
+    """System health check endpoint for monitoring and deployment.
+    
+    Returns system status including API responsiveness, data directory access,
+    and disk space availability. No authentication required.
+    """
+    if lifecycle.is_shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "shutting_down",
+                "message": "Server is gracefully shutting down",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        )
+    
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": {}
+    }
+    
+    # Check data directory access
+    try:
+        data_root = config.get_data_path("")
+        health_status["checks"]["data_directory"] = {
+            "status": "ok",
+            "path": str(data_root),
+            "accessible": data_root.exists()
+        }
+    except Exception as e:
+        health_status["status"] = "degraded"
+        health_status["checks"]["data_directory"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check disk space
+    try:
+        data_root = config.get_data_path("")
+        disk_usage = shutil.disk_usage(data_root)
+        free_gb = disk_usage.free / (1024 ** 3)
+        total_gb = disk_usage.total / (1024 ** 3)
+        used_percent = (disk_usage.used / disk_usage.total) * 100
+        
+        disk_status = "ok" if free_gb > 1.0 else "warning"
+        if disk_status == "warning":
+            health_status["status"] = "degraded"
+        
+        health_status["checks"]["disk_space"] = {
+            "status": disk_status,
+            "free_gb": round(free_gb, 2),
+            "total_gb": round(total_gb, 2),
+            "used_percent": round(used_percent, 2)
+        }
+    except Exception as e:
+        health_status["status"] = "degraded"
+        health_status["checks"]["disk_space"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check team count
+    try:
+        team_count = len(_list_team_ids())
+        health_status["checks"]["teams"] = {
+            "status": "ok",
+            "count": team_count
+        }
+    except Exception as e:
+        health_status["checks"]["teams"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    return health_status
 
 
 def _team_line(team_id: str) -> str:
@@ -479,7 +747,8 @@ def _team_line(team_id: str) -> str:
 
 
 @app.get("/activity/recent")
-def get_activity_recent(limit: int = 100):
+@limiter.limit("100/minute")
+def get_activity_recent(request: Request, limit: int = 100):
     limit = max(1, min(limit, 500))
     return {"activity": get_recent_activity_entries(limit)}
 
@@ -489,6 +758,9 @@ async def stream_activity(request: Request):
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[str] = asyncio.Queue()
     stop_event = threading.Event()
+    
+    # Track this connection for graceful shutdown
+    lifecycle.track_sse_connection(queue)
 
     def pump() -> None:
         try:
@@ -518,12 +790,14 @@ async def stream_activity(request: Request):
         finally:
             stop_event.set()
             thread.join(timeout=1)
+            lifecycle.untrack_sse_connection(queue)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get('/line/{team_key}')
-def get_team_status_by_team_key(team_key: str):
+@limiter.limit("200/minute")
+def get_team_status_by_team_key(request: Request, team_key: str):
     """Lookup team by API key and return JSON status (team_id, snapshot, metrics)."""
     team_id = auth_manager.findTeamByKey(team_key)
     if not team_id:
@@ -532,7 +806,9 @@ def get_team_status_by_team_key(team_key: str):
 
 
 @app.get("/api/v1/team/{team_id}/history")
+@limiter.limit("200/minute")
 def get_team_history(
+    request: Request,
     team_id: str,
     key: str = Query(..., description="Team API key for authentication"),
     days: Optional[int] = Query(7, description="Number of days to look back", ge=1, le=365),
@@ -584,7 +860,9 @@ def get_team_history(
 
 
 @app.get("/api/v1/leaderboard/history")
+@limiter.limit("100/minute")
 def get_leaderboard_history(
+    request: Request,
     days: Optional[int] = Query(7, description="Number of days to look back", ge=1, le=365),
     limit: Optional[int] = Query(500, description="Max data points per team", ge=1, le=5000)
 ):
@@ -798,7 +1076,9 @@ def get_team_metrics(
 
 
 @app.get("/api/v1/leaderboard/metrics")
+@limiter.limit("100/minute")
 def get_leaderboard_with_metrics(
+    request: Request,
     days: Optional[int] = Query(None, description="Days to calculate metrics over (None = all)", ge=1, le=365),
     sort_by: str = Query("portfolio_value", description="Sort by: portfolio_value, sharpe_ratio, total_return, calmar_ratio")
 ):
@@ -1033,7 +1313,9 @@ def _update_team_registry(team_id: str, repo_dir: Path) -> None:
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy")
+@limiter.limit("20/hour")
 async def upload_single_strategy(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     strategy_file: UploadFile = File(..., description="strategy.py file")
@@ -1116,7 +1398,9 @@ async def upload_single_strategy(
 
 
 @app.post("/api/v1/team/{team_id}/upload-strategy-package")
+@limiter.limit("20/hour")
 async def upload_strategy_package(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     strategy_zip: UploadFile = File(..., description="ZIP file containing strategy.py and helper modules")
@@ -1270,7 +1554,9 @@ async def upload_strategy_package(
 
 
 @app.post("/api/v1/team/{team_id}/upload-multiple-files")
+@limiter.limit("20/hour")
 async def upload_multiple_files(
+    request: Request,
     team_id: str,
     key: str = Form(..., description="Team API key for authentication"),
     files: List[UploadFile] = File(..., description="Multiple Python files (must include strategy.py)")

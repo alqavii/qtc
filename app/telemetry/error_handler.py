@@ -49,6 +49,23 @@ class ErrorHandler:
         context = {"component": component} if component else None
         self._record("system", error, context)
 
+    def handle_api_error(
+        self,
+        error: Exception,
+        *,
+        endpoint: Optional[str] = None,
+        status_code: Optional[int] = None,
+        client_ip: Optional[str] = None
+    ) -> None:
+        context = {}
+        if endpoint:
+            context["endpoint"] = endpoint
+        if status_code:
+            context["status_code"] = status_code
+        if client_ip:
+            context["client_ip"] = client_ip
+        self._record("api", error, context)
+
     def get_error_summary(self) -> Dict[str, Any]:
         with self._lock:
             recent = list(self._recent[-50:])
