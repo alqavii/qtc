@@ -53,20 +53,55 @@ class TradeExecutor:
 
             broker_order_id: Optional[str] = None
             broker_error: Optional[str] = None
-            if self._broker is not None and order_type == "market":
+            if self._broker is not None and order_type in ("market", "limit"):
                 try:
                     client_id = f"{req.team_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
-                    order_id = self._broker.placeMarketOrder(
-                        symbol, side, quantity, clientOrderId=client_id
-                    )
+                    
+                    # Place order based on type
+                    if order_type == "market":
+                        order_id = self._broker.placeMarketOrder(
+                            symbol, side, quantity, clientOrderId=client_id
+                        )
+                    elif order_type == "limit":
+                        order_id = self._broker.placeLimitOrder(
+                            symbol, side, quantity, limit_price=price,
+                            time_in_force=req.time_in_force, clientOrderId=client_id
+                        )
+                    
                     broker_order_id = order_id
                     logger.info(
-                        "Alpaca order submitted: %s for %s %s %s",
+                        "Alpaca %s order submitted: %s for %s %s %s @ %s",
+                        order_type,
                         order_id,
                         symbol,
                         side,
                         quantity,
+                        price,
                     )
+                    
+                    # Get actual execution price from Alpaca for market orders
+                    # (limit orders may not fill immediately)
+                    if order_type == "market":
+                        try:
+                            import time
+                            time.sleep(0.5)  # Brief delay to allow order to fill
+                            order_details = self._broker.getOrderById(order_id)
+                            filled_price = order_details.get("filled_avg_price")
+                            if filled_price is not None:
+                                execution_price = Decimal(str(filled_price))
+                                logger.info(
+                                    "Alpaca execution price: %s (requested: %s)",
+                                    execution_price,
+                                    price,
+                                )
+                        except Exception as ep:  # noqa: BLE001
+                            logger.warning(
+                                "Could not retrieve execution price for order %s: %s",
+                                order_id,
+                                ep,
+                            )
+                            # Fall back to requested price
+                    
                 except Exception as be:  # noqa: BLE001
                     broker_error = str(be)
                     logger.error("Alpaca order submission failed: %s", be)
@@ -141,19 +176,49 @@ class TradeExecutor:
             execution_price = self._calculate_execution_price(price, side)
 
             broker_error: Optional[str] = None
-            if self._broker is not None and order_type == "market":
+            broker_order_id: Optional[str] = None
+            if self._broker is not None and order_type in ("market", "limit"):
                 try:
                     client_id = f"{team.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
-                    order_id = self._broker.placeMarketOrder(
-                        symbol, side, quantity, clientOrderId=client_id
-                    )
+                    
+                    # Place order based on type
+                    if order_type == "market":
+                        order_id = self._broker.placeMarketOrder(
+                            symbol, side, quantity, clientOrderId=client_id
+                        )
+                    elif order_type == "limit":
+                        order_id = self._broker.placeLimitOrder(
+                            symbol, side, quantity, limit_price=price,
+                            clientOrderId=client_id
+                        )
+                    
+                    broker_order_id = order_id
                     logger.info(
-                        "Alpaca order submitted: %s for %s %s %s",
+                        "Alpaca %s order submitted: %s for %s %s %s @ %s",
+                        order_type,
                         order_id,
                         symbol,
                         side,
                         quantity,
+                        price,
                     )
+                    
+                    # Get actual execution price for market orders
+                    if order_type == "market":
+                        try:
+                            import time
+                            time.sleep(0.5)
+                            order_details = self._broker.getOrderById(order_id)
+                            filled_price = order_details.get("filled_avg_price")
+                            if filled_price is not None:
+                                execution_price = Decimal(str(filled_price))
+                        except Exception as ep:  # noqa: BLE001
+                            logger.warning(
+                                "Could not retrieve execution price for order %s: %s",
+                                order_id,
+                                ep,
+                            )
+                    
                 except Exception as be:  # noqa: BLE001
                     broker_error = str(be)
                     logger.error("Alpaca order submission failed: %s", be)

@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 
@@ -76,6 +76,91 @@ class AlpacaBroker:
                 }
             )
         return out
+
+    def placeLimitOrder(
+        self,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        limit_price: Decimal,
+        time_in_force: str = "day",
+        clientOrderId: Optional[str] = None,
+    ) -> str:
+        """Submit a limit order at specified price.
+        
+        Args:
+            symbol: Stock symbol (e.g., 'AAPL')
+            side: 'buy' or 'sell'
+            quantity: Quantity to trade (supports fractional shares)
+            limit_price: Maximum price for buy, minimum price for sell
+            time_in_force: 'day', 'gtc', 'ioc', 'fok' (default: 'day')
+            clientOrderId: Optional client-provided order ID
+            
+        Returns:
+            Alpaca order ID as string
+        """
+        order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
+        qty_str = str(quantity)
+        limit_price_str = str(limit_price)
+        
+        # Map time_in_force string to enum
+        tif_map = {
+            "day": TimeInForce.DAY,
+            "gtc": TimeInForce.GTC,
+            "ioc": TimeInForce.IOC,
+            "fok": TimeInForce.FOK,
+        }
+        tif = tif_map.get(time_in_force.lower(), TimeInForce.DAY)
+        
+        req = LimitOrderRequest(
+            symbol=symbol,
+            qty=qty_str,
+            side=order_side,
+            time_in_force=tif,
+            limit_price=limit_price_str,
+        )
+        if clientOrderId is not None:
+            setattr(req, "client_order_id", clientOrderId)
+        
+        order = self._client.submit_order(order_data=req)
+        return str(order.id)
+
+    def getOrderById(self, order_id: str) -> dict:
+        """Get order details by order ID.
+        
+        Args:
+            order_id: Alpaca order ID
+            
+        Returns:
+            Dictionary with order details including:
+            - id: Order ID
+            - symbol: Stock symbol
+            - qty: Ordered quantity
+            - filled_qty: Quantity filled so far
+            - side: 'buy' or 'sell'
+            - type: Order type ('market', 'limit', etc.)
+            - status: Order status ('filled', 'partially_filled', 'pending', etc.)
+            - filled_avg_price: Average execution price (None if not filled)
+            - limit_price: Limit price (for limit orders)
+            - created_at: Order creation timestamp
+            - filled_at: Fill timestamp (None if not filled)
+            - client_order_id: Client-provided order ID
+        """
+        order = self._client.get_order_by_id(order_id)
+        return {
+            "id": str(order.id),
+            "client_order_id": getattr(order, "client_order_id", None),
+            "symbol": order.symbol,
+            "qty": order.qty,
+            "filled_qty": getattr(order, "filled_qty", None),
+            "side": order.side.value if hasattr(order.side, "value") else str(order.side),
+            "type": order.type.value if hasattr(order.type, "value") else str(order.type),
+            "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+            "filled_avg_price": getattr(order, "filled_avg_price", None),
+            "limit_price": getattr(order, "limit_price", None),
+            "created_at": order.created_at,
+            "filled_at": getattr(order, "filled_at", None),
+        }
 
 
 def _load_env_file(path: Path) -> None:

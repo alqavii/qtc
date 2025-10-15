@@ -5,7 +5,7 @@ from decimal import Decimal
 from datetime import datetime, timezone
 
 Side = Literal["buy", "sell"]
-OrderType = Literal["market", "limit", "stop", "stop_limit"]
+OrderType = Literal["market", "limit"]
 TimeInForce = Literal["day", "gtc", "ioc", "fok"]
 
 
@@ -14,6 +14,8 @@ class StrategySignal(BaseModel):
     action: Side
     quantity: Decimal
     price: Decimal
+    order_type: OrderType = "market"
+    time_in_force: TimeInForce = "day"
 
 
 class TradeRequest(BaseModel):

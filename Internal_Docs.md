@@ -1,3 +1,5 @@
+Don't touch or meet your demise - internal docs for team member's own reference
+
 Restart server (used for api endpoints to be implemented):
 sudo systemctl restart qtc-api
 sudo systemctl status qtc-api

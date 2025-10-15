@@ -517,6 +517,8 @@ class QTCAlphaOrchestrator:
             side=signal.action,
             quantity=signal.quantity,
             price=signal.price,
+            order_type=signal.order_type,
+            time_in_force=signal.time_in_force,
         )
         success, message = trade_executor.execute(team, req, current_prices)
 

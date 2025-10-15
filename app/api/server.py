@@ -648,18 +648,33 @@ def get_team_trades(
     ```json
     {
         "team_id": "test1",
+        "count": 1,
         "trades": [
             {
+                "team_id": "test1",
                 "timestamp": "2025-10-10T14:30:00+00:00",
                 "symbol": "NVDA",
                 "side": "buy",
                 "quantity": 10,
-                "price": 500.25,
-                "value": 5002.50
+                "requested_price": 500.25,
+                "execution_price": 500.30,
+                "order_type": "market",
+                "broker_order_id": "abc123-alpaca-order-id"
             }
         ]
     }
     ```
+    
+    **Trade Fields:**
+    - `team_id`: Team identifier
+    - `timestamp`: Trade execution time (ISO 8601 UTC)
+    - `symbol`: Stock symbol
+    - `side`: "buy" or "sell"
+    - `quantity`: Quantity traded
+    - `requested_price`: Price requested by strategy
+    - `execution_price`: Actual filled price (from Alpaca for market orders, or requested price for local-only)
+    - `order_type`: "market" or "limit"
+    - `broker_order_id`: Alpaca order ID (null if local-only mode)
     """
     # Validate API key
     if not auth_manager.validateTeam(team_id, key):
