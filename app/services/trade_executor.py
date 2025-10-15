@@ -654,6 +654,22 @@ class TradeExecutor:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metrics, default=str) + "\n")
 
+    def appendStrategyError(self, team_id: str, error_info: Dict[str, Any]) -> None:
+        """Log strategy execution errors per team.
+        
+        Args:
+            team_id: Team identifier
+            error_info: Dictionary containing error details (timestamp, error_type, message, etc.)
+        """
+        team_dir = config.get_data_path(f"team/{team_id}")
+        team_dir.mkdir(parents=True, exist_ok=True)
+        error_file = team_dir / "errors.jsonl"
+        import json
+        
+        with open(error_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(error_info, default=str) + "\n")
+        logger.debug("Strategy error logged for team %s: %s", team_id, error_info.get("error_type"))
+
 
 # Global trade executor instance
 trade_executor = TradeExecutor()

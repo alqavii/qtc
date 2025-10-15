@@ -14,8 +14,6 @@ class StrategySignal(BaseModel):
     action: Side
     quantity: Decimal
     price: Decimal
-    confidence: Optional[float] = None
-    reason: Optional[str] = None
 
 
 class TradeRequest(BaseModel):

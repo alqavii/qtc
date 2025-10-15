@@ -1,7 +1,7 @@
 # QTC Alpha API Documentation
 
 **Version:** Beta
-**Last Updated:** October 14, 2025
+**Last Updated:** October 15, 2025
 
 ---
 
@@ -30,12 +30,16 @@ The QTC Alpha API provides both public and authenticated endpoints for accessing
 - **Team-specific metrics and trade history**
 - **Server-Sent Events (SSE)** for live activity streams
 - **Strategy file uploads** (single file, ZIP packages, or multiple files) ⭐ NEW
+- **Error tracking and debugging** (timeouts, exceptions, validation failures) ⭐ NEW
+- **Detailed position history** (per-symbol tracking and aggregate summaries) ⭐ NEW
 
 **API Features:**
 - RESTful JSON API
 - CORS enabled for browser access (GET and POST methods)
 - Server-Sent Events for real-time updates
 - File upload support for strategy deployment
+- Strategy error logging and monitoring
+- Comprehensive position tracking
 - Rate-limited to prevent abuse
 
 ---
@@ -103,7 +107,77 @@ Returns current rankings of all teams sorted by portfolio value.
 
 ---
 
-#### 2. Get Historical Data for All Teams
+#### 2. Get System Status ⭐ NEW
+**GET** `/api/v1/status`
+
+Returns system-wide health information including market status, orchestrator status, and data feed health. Essential for monitoring and status banners.
+
+**Authentication:** None required (public endpoint)
+
+**Parameters:** None
+
+**Example Request:**
+```
+GET /api/v1/status
+```
+
+**Response:**
+```json
+{
+  "status": "operational",
+  "timestamp": "2025-10-15T15:42:30+00:00",
+  "market": {
+    "is_open": true,
+    "status": "trading"
+  },
+  "orchestrator": {
+    "running": true,
+    "last_heartbeat": "2025-10-15T15:42:00+00:00",
+    "execution_frequency_seconds": 60,
+    "teams_loaded": 9,
+    "teams_active": 9,
+    "uptime_status": "healthy"
+  },
+  "data_feed": {
+    "last_update": "2025-10-15T15:42:00+00:00",
+    "seconds_since_update": 30,
+    "status": "healthy",
+    "symbols_tracked": 9,
+    "bars_received": 9
+  }
+}
+```
+
+**Response Fields:**
+- `status` - Overall system status: "operational", "degraded", "stopped", "starting"
+- `timestamp` - Current server time (ISO 8601 UTC)
+- `market.is_open` - Whether US equity market is currently open
+- `market.status` - "trading" or "closed"
+- `orchestrator.running` - Whether trading orchestrator is active
+- `orchestrator.last_heartbeat` - Last time orchestrator updated status
+- `orchestrator.execution_frequency_seconds` - How often strategies execute (60s)
+- `orchestrator.teams_loaded` - Total teams in system
+- `orchestrator.teams_active` - Teams currently executing (market hours)
+- `data_feed.status` - "healthy", "delayed", or "stale"
+- `data_feed.seconds_since_update` - Freshness indicator
+- `data_feed.symbols_tracked` - Number of symbols being monitored
+
+**Status Values:**
+- `operational` - All systems running normally
+- `degraded` - Running but data may be stale
+- `stopped` - Orchestrator not running
+- `starting` - System initializing
+
+**Use Cases:**
+- System health monitoring
+- Status banner in frontend ("🟢 Market Open | ✅ Trading Active")
+- Determine why strategies aren't trading (market closed vs system down)
+- Alerting and uptime monitoring
+- Troubleshooting
+
+---
+
+#### 3. Get Historical Data for All Teams
 **GET** `/api/v1/leaderboard/history`
 
 Returns time-series portfolio data for all teams (public endpoint).
@@ -228,14 +302,12 @@ GET /line/XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg
     "positions": {
       "NVDA": {
         "quantity": 10,
-        "avg_cost": 500.0,
         "value": 5500.25
       }
     }
   },
   "metrics": {
-    "total_trades": 25,
-    "win_rate": 0.60
+    "total_trades": 25
   }
 }
 ```
@@ -340,29 +412,62 @@ GET /api/v1/team/test1/trades?key=XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg&li
   "count": 25,
   "trades": [
     {
+      "team_id": "test1",
       "timestamp": "2025-10-10T14:30:00+00:00",
       "symbol": "NVDA",
       "side": "buy",
-      "quantity": 10,
-      "price": 500.25,
+      "quantity": "10.0",
+      "requested_price": "500.25",
+      "execution_price": "500.25",
       "order_type": "market",
-      "team_id": "test1"
+      "broker_order_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     },
     {
+      "team_id": "test1",
       "timestamp": "2025-10-10T14:25:00+00:00",
       "symbol": "AAPL",
       "side": "sell",
-      "quantity": 5,
-      "price": 175.50
+      "quantity": "5.0",
+      "requested_price": "175.50",
+      "execution_price": "175.48",
+      "order_type": "market",
+      "broker_order_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901"
     }
   ]
 }
 ```
 
+**Response Fields:**
+- `team_id` - Team identifier
+- `count` - Total number of trades returned
+- `trades` - Array of trade objects, each containing:
+  - `team_id` - Team that executed the trade
+  - `timestamp` - Execution timestamp (ISO 8601, UTC)
+  - `symbol` - Stock ticker (e.g., "NVDA", "AAPL")
+  - `side` - "buy" or "sell"
+  - `quantity` - Share quantity (string representation of decimal)
+  - `requested_price` - Price requested by the strategy (string)
+  - `execution_price` - Actual execution price from broker (string)
+  - `order_type` - Order type ("market", "limit", etc.)
+  - `broker_order_id` - Alpaca broker order ID (UUID, may be null)
+
+**Important Notes:**
+1. **All numeric values are strings** - Parse them in your frontend:
+   ```javascript
+   const price = parseFloat(trade.execution_price);
+   const quantity = parseFloat(trade.quantity);
+   const totalValue = price * quantity;
+   ```
+
+2. **Trades are ordered most recent first** after reversal
+
+3. **`requested_price` vs `execution_price`** - May differ slightly due to market conditions
+
 **Use Cases:**
 - Display trade history table
 - Analyze trading patterns
 - Track order execution
+- Calculate trade costs and P&L
 
 ---
 
@@ -403,9 +508,6 @@ GET /api/v1/team/test1/metrics?key=XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg&d
     "annualized_return_percentage": 12.47,
     "annualized_volatility": 0.0673,
     "annualized_volatility_percentage": 6.73,
-    "win_rate": 0.58,
-    "win_rate_percentage": 58.0,
-    "profit_factor": 1.45,
     "avg_win": 0.0012,
     "avg_loss": -0.0009,
     "total_trades": 250,
@@ -440,8 +542,6 @@ GET /api/v1/team/test1/metrics?key=XBGuqdB54MVsyZ18BC6K3HwN3CaIiBC3vFdDsxMisUg&d
 | **Max Drawdown** | Largest peak-to-trough decline | Closer to 0 is better |
 | **Total Return %** | Overall profit/loss since start | Positive is profitable |
 | **Annualized Return %** | Expected yearly return | Higher is better |
-| **Win Rate %** | Percentage of profitable periods | >50% is good |
-| **Profit Factor** | Total wins / total losses | >1 is profitable, >2 is good |
 
 **Use Cases:**
 - Comprehensive performance analysis
@@ -488,8 +588,6 @@ GET /api/v1/leaderboard/metrics?days=7&sort_by=sharpe_ratio
       "annualized_return": 0.1247,
       "annualized_return_percentage": 12.47,
       "annualized_volatility_percentage": 6.73,
-      "win_rate_percentage": 58.0,
-      "profit_factor": 1.45,
       "total_trades": 250,
       "current_value": 10542.75,
       "starting_value": 10000.00
@@ -516,6 +614,343 @@ GET /api/v1/leaderboard/metrics?days=7&sort_by=sharpe_ratio
 - Compare teams by different performance criteria
 - Find best risk-adjusted performers
 - Sort by Sharpe ratio instead of just portfolio value
+
+---
+
+#### 11. Get Team Errors ⭐ NEW
+**GET** `/api/v1/team/{team_id}/errors`
+
+Returns recent strategy execution errors, timeouts, and validation failures for a team. Essential for debugging strategy issues.
+
+**Authentication:** Required (API key)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `team_id` | string (path) | - | Team identifier |
+| `key` | string (query) | - | **Required** Team API key |
+| `limit` | integer | 100 | Max errors to return (1-500) |
+
+**Example Request:**
+```
+GET /api/v1/team/epsilon/errors?key=YOUR_API_KEY&limit=20
+```
+
+**Response:**
+```json
+{
+  "team_id": "epsilon",
+  "error_count": 5,
+  "errors": [
+    {
+      "timestamp": "2025-10-14T14:30:00+00:00",
+      "error_type": "TimeoutError",
+      "message": "Strategy execution exceeded 5 seconds",
+      "strategy": "Strategy",
+      "timeout": true,
+      "phase": "signal_generation"
+    },
+    {
+      "timestamp": "2025-10-14T14:28:00+00:00",
+      "error_type": "KeyError",
+      "message": "'AAPL'",
+      "strategy": "Strategy",
+      "timeout": false,
+      "phase": "signal_generation"
+    }
+  ]
+}
+```
+
+**Error Types:**
+- `TimeoutError` - Strategy took longer than 5 seconds
+- `KeyError` - Missing data or symbol
+- `ValidationError` - Invalid signal format
+- `AttributeError` - Code logic errors
+- `ImportError` - Blacklisted import attempted
+
+**Use Cases:**
+- Debug strategy timeouts
+- Identify runtime exceptions
+- Track validation errors
+- Monitor strategy health
+
+---
+
+#### 12. Get Team Execution Health ⭐ NEW
+**GET** `/api/v1/team/{team_id}/execution-health`
+
+Returns comprehensive execution health metrics for a team's strategy including success rate, timing performance, error counts, and timeout warnings. Critical for monitoring if your strategy is approaching the 5-second timeout limit.
+
+**Authentication:** Required (API key)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `team_id` | string (path) | - | Team identifier |
+| `key` | string (query) | - | **Required** Team API key |
+
+**Example Request:**
+```
+GET /api/v1/team/admin/execution-health?key=YOUR_API_KEY
+```
+
+**Response:**
+```json
+{
+  "team_id": "admin",
+  "timestamp": "2025-10-15T15:45:00+00:00",
+  "strategy": {
+    "entry_point": "strategy:Strategy",
+    "repo_path": "/opt/qtc/external_strategies/admin",
+    "status": "active",
+    "last_uploaded": "2025-10-14T16:50:00+00:00",
+    "run_24_7": false
+  },
+  "execution": {
+    "is_active": true,
+    "last_execution": "2025-10-15T15:44:00+00:00",
+    "seconds_since_last": 35,
+    "total_executions_today": 157,
+    "successful_executions": 155,
+    "failed_executions": 2,
+    "success_rate_percentage": 98.73
+  },
+  "errors": {
+    "error_count": 1,
+    "timeout_count": 1,
+    "last_error": {
+      "timestamp": "2025-10-15T14:05:00+00:00",
+      "error_type": "TimeoutError",
+      "message": "Strategy execution exceeded 5 seconds",
+      "timeout": true
+    },
+    "consecutive_failures": 0
+  },
+  "performance": {
+    "avg_execution_time_ms": 125,
+    "approaching_timeout": false,
+    "timeout_risk": "low",
+    "timeout_limit_seconds": 5
+  },
+  "trading": {
+    "total_trades_today": 52,
+    "signal_rate_percentage": 33.12
+  }
+}
+```
+
+**Response Fields:**
+- `strategy.status` - "active", "idle", "error"
+- `strategy.last_uploaded` - When strategy file was last modified
+- `execution.is_active` - Currently executing (respects market hours)
+- `execution.success_rate_percentage` - % of successful executions
+- `errors.timeout_count` - How many times strategy hit 5s limit
+- `errors.last_error` - Most recent error details
+- `performance.avg_execution_time_ms` - Average strategy execution time
+- `performance.approaching_timeout` - Warning if nearing 5s limit
+- `performance.timeout_risk` - "low", "medium", "high" based on timeout count
+- `trading.signal_rate_percentage` - How often strategy generates trades
+
+**Strategy Status Values:**
+- `active` - Running and executing normally
+- `idle` - Loaded but not executing (outside market hours if run_24_7=false)
+- `error` - Failed to execute, check errors field
+
+**Timeout Risk Levels:**
+- `low` - No timeouts, healthy performance
+- `medium` - 1-3 timeouts, approaching limit
+- `high` - 4+ timeouts, optimization needed
+
+**Use Cases:**
+- Monitor if strategy is actively running
+- Check if approaching the 5-second timeout limit
+- Track execution success rate
+- Identify when strategy was last uploaded
+- Debug why strategy stopped trading
+- Monitor strategy health dashboard
+
+---
+
+#### 13. Get Portfolio History with Positions ⭐ NEW
+**GET** `/api/v1/team/{team_id}/portfolio-history`
+
+Returns complete portfolio snapshots including all position details over time. Unlike `/history` which only returns portfolio value, this endpoint includes all position data for each timestamp.
+
+**Authentication:** Required (API key)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `team_id` | string (path) | - | Team identifier |
+| `key` | string (query) | - | **Required** Team API key |
+| `days` | integer | 7 | Days to look back (1-365) |
+| `limit` | integer | 500 | Max snapshots (1-5000) |
+
+**Example Request:**
+```
+GET /api/v1/team/epsilon/portfolio-history?key=YOUR_API_KEY&days=7&limit=100
+```
+
+**Response:**
+```json
+{
+  "team_id": "epsilon",
+  "days": 7,
+  "snapshot_count": 2835,
+  "snapshots": [
+    {
+      "timestamp": "2025-10-14T14:30:00+00:00",
+      "cash": 95000.0,
+      "market_value": 100005.0,
+      "positions": {
+        "AAPL": {
+          "symbol": "AAPL",
+          "quantity": 10,
+          "side": "buy",
+          "value": 1505.0
+        },
+        "NVDA": {
+          "symbol": "NVDA",
+          "quantity": 5,
+          "side": "buy",
+          "value": 3500.0
+        }
+      }
+    }
+  ]
+}
+```
+
+**Use Cases:**
+- Portfolio composition charts (pie/stacked area)
+- Position timeline visualization
+- Entry/exit point analysis
+- Detailed portfolio reconstruction
+- Asset allocation tracking
+
+---
+
+#### 13. Get Position History for Symbol ⭐ NEW
+**GET** `/api/v1/team/{team_id}/position/{symbol}/history`
+
+Track how a specific position evolved over time. Shows quantity and value for one symbol across multiple timestamps.
+
+**Authentication:** Required (API key)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `team_id` | string (path) | - | Team identifier |
+| `symbol` | string (path) | - | Stock symbol (e.g., AAPL, NVDA) |
+| `key` | string (query) | - | **Required** Team API key |
+| `days` | integer | 7 | Days to look back (1-365) |
+| `limit` | integer | 1000 | Max data points (1-10000) |
+
+**Example Request:**
+```
+GET /api/v1/team/epsilon/position/AAPL/history?key=YOUR_API_KEY&days=7&limit=500
+```
+
+**Response:**
+```json
+{
+  "team_id": "epsilon",
+  "symbol": "AAPL",
+  "days": 7,
+  "data_points": 156,
+  "history": [
+    {
+      "timestamp": "2025-10-14T09:30:00+00:00",
+      "quantity": 0,
+      "value": 0
+    },
+    {
+      "timestamp": "2025-10-14T09:31:00+00:00",
+      "quantity": 10,
+      "value": 1505.0
+    },
+    {
+      "timestamp": "2025-10-14T14:30:00+00:00",
+      "quantity": 10,
+      "value": 1510.0
+    }
+  ]
+}
+```
+
+**Use Cases:**
+- Symbol-specific position tracking
+- Entry/exit visualization
+- Position value progression for one asset
+- Position sizing analysis
+- Holding period analysis
+
+---
+
+#### 14. Get Positions Summary ⭐ NEW
+**GET** `/api/v1/team/{team_id}/positions/summary`
+
+Get aggregate statistics for all symbols traded by a team. Shows which symbols were held, for how long, current positions, and trading frequency.
+
+**Authentication:** Required (API key)
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `team_id` | string (path) | - | Team identifier |
+| `key` | string (query) | - | **Required** Team API key |
+| `days` | integer | 30 | Days to analyze (1-365) |
+
+**Example Request:**
+```
+GET /api/v1/team/epsilon/positions/summary?key=YOUR_API_KEY&days=30
+```
+
+**Response:**
+```json
+{
+  "team_id": "epsilon",
+  "period_days": 30,
+  "symbols_traded": 5,
+  "current_positions": 2,
+  "symbols": [
+    {
+      "symbol": "AAPL",
+      "currently_holding": true,
+      "current_quantity": 10,
+      "current_value": 1505.0,
+      "current_pnl": 5.0,
+      "times_held": 156,
+      "minutes_held": 156,
+      "max_quantity": 15,
+      "avg_quantity": 8.5
+    },
+    {
+      "symbol": "NVDA",
+      "currently_holding": false,
+      "current_quantity": 0,
+      "times_held": 45,
+      "minutes_held": 45,
+      "max_quantity": 10,
+      "avg_quantity": 5.0
+    }
+  ]
+}
+```
+
+**Metrics Explained:**
+- `times_held` - Number of minutes position was held
+- `minutes_held` - Total duration position was active
+- `max_quantity` - Largest position size ever held
+- `avg_quantity` - Average position size when holding
+
+**Use Cases:**
+- Overview of all trading activity
+- Identify most traded symbols
+- Current positions snapshot
+- Trading frequency analysis
+- Position concentration analysis
 
 ---
 
@@ -882,7 +1317,6 @@ All timestamps are in **ISO 8601 format with UTC timezone**:
   "positions": {
     "SYMBOL": {
       "quantity": 10,
-      "avg_cost": 500.0,
       "value": 5000.0,
       "side": "long"
     }
@@ -1073,8 +1507,6 @@ async function displayTeamMetrics(teamId, apiKey) {
   console.log(`  Calmar Ratio: ${metrics.calmar_ratio.toFixed(2)}`);
   console.log(`  Max Drawdown: ${metrics.max_drawdown_percentage.toFixed(2)}%`);
   console.log(`  Total Return: ${metrics.total_return_percentage.toFixed(2)}%`);
-  console.log(`  Win Rate: ${metrics.win_rate_percentage.toFixed(2)}%`);
-  console.log(`  Profit Factor: ${metrics.profit_factor.toFixed(2)}`);
   
   // Create metrics cards
   const metricsHTML = `
@@ -1126,7 +1558,6 @@ async function displayMetricsLeaderboard() {
           <th>Sharpe Ratio</th>
           <th>Total Return</th>
           <th>Max DD</th>
-          <th>Win Rate</th>
         </tr>
       </thead>
       <tbody>
@@ -1142,7 +1573,6 @@ async function displayMetricsLeaderboard() {
               ${team.total_return_percentage?.toFixed(2) || 'N/A'}%
             </td>
             <td>${team.max_drawdown_percentage?.toFixed(2) || 'N/A'}%</td>
-            <td>${team.win_rate_percentage?.toFixed(2) || 'N/A'}%</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1409,11 +1839,17 @@ The API enforces rate limits to prevent abuse and ensure fair usage. Limits are 
 | `/api/v1/team/{team_id}/upload-strategy` | POST | **3 per minute** | Prevent storage abuse |
 | `/api/v1/team/{team_id}/upload-strategy-package` | POST | **2 per minute** | Large file uploads |
 | `/api/v1/team/{team_id}/upload-multiple-files` | POST | **2 per minute** | Multiple file uploads |
+| `/api/v1/team/{team_id}/portfolio-history` | GET | **20 per minute** | Full portfolio snapshots ⭐ NEW |
 | `/api/v1/leaderboard/history` | GET | **10 per minute** | Expensive query (all teams) |
 | `/api/v1/leaderboard/metrics` | GET | **10 per minute** | Heavy computation |
+| `/api/v1/team/{team_id}/errors` | GET | **30 per minute** | Error tracking ⭐ NEW |
+| `/api/v1/team/{team_id}/execution-health` | GET | **60 per minute** | Execution monitoring ⭐ NEW |
 | `/api/v1/team/{team_id}/history` | GET | **30 per minute** | Moderate load |
 | `/api/v1/team/{team_id}/metrics` | GET | **30 per minute** | Moderate computation |
 | `/api/v1/team/{team_id}/trades` | GET | **30 per minute** | File reads |
+| `/api/v1/team/{team_id}/position/{symbol}/history` | GET | **30 per minute** | Symbol position tracking ⭐ NEW |
+| `/api/v1/team/{team_id}/positions/summary` | GET | **30 per minute** | Position statistics ⭐ NEW |
+| `/api/v1/status` | GET | **120 per minute** | System health check ⭐ NEW |
 | `/leaderboard` | GET | **60 per minute** | Simple read |
 | **All endpoints (default)** | ALL | **100 per minute** | Global safety net |
 
@@ -1438,9 +1874,15 @@ HTTP/1.1 429 Too Many Requests
 
 | Endpoint | Recommended Interval | Notes |
 |----------|---------------------|-------|
+| `/api/v1/status` | 30 seconds | System health monitoring ⭐ NEW |
 | `/leaderboard` | 60 seconds | Updates every minute during market hours |
 | `/api/v1/leaderboard/history` | 5-10 minutes | Historical data, changes slowly |
 | `/api/v1/team/{team_id}/history` | 60 seconds | Team-specific updates |
+| `/api/v1/team/{team_id}/execution-health` | 60 seconds | Monitor strategy health ⭐ NEW |
+| `/api/v1/team/{team_id}/portfolio-history` | 2-5 minutes | Full snapshots with positions ⭐ NEW |
+| `/api/v1/team/{team_id}/errors` | On-demand | Check when debugging issues ⭐ NEW |
+| `/api/v1/team/{team_id}/position/{symbol}/history` | 5 minutes | Symbol-specific tracking ⭐ NEW |
+| `/api/v1/team/{team_id}/positions/summary` | 5-10 minutes | Aggregate statistics ⭐ NEW |
 | `/activity/stream` | Keep connection open | Use SSE, don't poll |
 
 ### Best Practices
@@ -1573,6 +2015,7 @@ async function fetchTeamData(teamId, apiKey) {
 
 ### Public Endpoints (No Auth)
 ```
+GET  /api/v1/status                        # System health status ⭐ NEW
 GET  /leaderboard                          # Current rankings
 GET  /api/v1/leaderboard/history           # All teams historical data
 GET  /api/v1/leaderboard/metrics           # Leaderboard with performance metrics
@@ -1587,9 +2030,14 @@ GET  /{team_key}                           # Team status (plain text)
 GET  /api/v1/team/{team_id}/history        # Team historical data
 GET  /api/v1/team/{team_id}/trades         # Team trade history
 GET  /api/v1/team/{team_id}/metrics        # Team performance metrics
+GET  /api/v1/team/{team_id}/execution-health           # Execution health & timeout monitoring ⭐ NEW
+GET  /api/v1/team/{team_id}/errors         # Strategy execution errors ⭐ NEW
+GET  /api/v1/team/{team_id}/portfolio-history          # Full portfolio snapshots with positions ⭐ NEW
+GET  /api/v1/team/{team_id}/position/{symbol}/history  # Position history for specific symbol ⭐ NEW
+GET  /api/v1/team/{team_id}/positions/summary          # Aggregate position statistics ⭐ NEW
 ```
 
-### Strategy Upload Endpoints (Require API Key) ⭐ NEW
+### Strategy Upload Endpoints (Require API Key)
 ```
 POST /api/v1/team/{team_id}/upload-strategy            # Upload single strategy.py file
 POST /api/v1/team/{team_id}/upload-strategy-package    # Upload ZIP package (multi-file)
@@ -1599,13 +2047,31 @@ POST /api/v1/team/{team_id}/upload-multiple-files      # Upload multiple files i
 ### Testing the API
 
 ```bash
+# Test system status
+curl http://localhost:8000/api/v1/status | jq
+
 # Test leaderboard
 curl http://localhost:8000/leaderboard | jq
 
 # Test team history (replace with your key)
 curl "http://localhost:8000/api/v1/team/test1/history?key=YOUR_KEY&days=7" | jq
 
-# Test strategy upload (NEW)
+# Test execution health (NEW)
+curl "http://localhost:8000/api/v1/team/admin/execution-health?key=YOUR_KEY" | jq
+
+# Test error tracking (NEW)
+curl "http://localhost:8000/api/v1/team/epsilon/errors?key=YOUR_KEY&limit=10" | jq
+
+# Test portfolio history with positions (NEW)
+curl "http://localhost:8000/api/v1/team/epsilon/portfolio-history?key=YOUR_KEY&days=7&limit=100" | jq
+
+# Test position history for a symbol (NEW)
+curl "http://localhost:8000/api/v1/team/epsilon/position/AAPL/history?key=YOUR_KEY&days=7" | jq
+
+# Test position summary (NEW)
+curl "http://localhost:8000/api/v1/team/epsilon/positions/summary?key=YOUR_KEY&days=30" | jq
+
+# Test strategy upload
 curl -X POST "http://localhost:8000/api/v1/team/epsilon/upload-strategy" \
   -F "key=YOUR_API_KEY" \
   -F "strategy_file=@strategy.py"

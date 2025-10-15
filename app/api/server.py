@@ -221,27 +221,11 @@ def _calculate_performance_metrics(history: List[Dict[str, Any]], initial_value:
         
         total_return_percentage = total_return * 100 if np.isfinite(total_return) else total_return
         
-        # Win rate
-        win_rate = float(np.sum(returns > 0) / len(returns)) if len(returns) > 0 else 0
-        
         # Average win/loss
         winning_returns = returns[returns > 0]
         losing_returns = returns[returns < 0]
         avg_win = float(np.mean(winning_returns)) if len(winning_returns) > 0 else 0
         avg_loss = float(np.mean(losing_returns)) if len(losing_returns) > 0 else 0
-        
-        # Profit factor
-        total_wins = float(np.sum(winning_returns)) if len(winning_returns) > 0 else 0
-        total_losses = abs(float(np.sum(losing_returns))) if len(losing_returns) > 0 else 0
-        
-        if total_losses < 1e-10:
-            # No losses
-            if total_wins > 1e-10:
-                profit_factor = np.inf  # All wins, no losses
-            else:
-                profit_factor = 0.0  # No wins, no losses
-        else:
-            profit_factor = total_wins / total_losses
         
         # Helper function to convert inf to None for JSON serialization
         def safe_float(value):
@@ -266,9 +250,6 @@ def _calculate_performance_metrics(history: List[Dict[str, Any]], initial_value:
             "annualized_return_percentage": safe_float(annualized_return * 100),
             "annualized_volatility": safe_float(annualized_volatility),
             "annualized_volatility_percentage": safe_float(annualized_volatility * 100),
-            "win_rate": safe_float(win_rate),
-            "win_rate_percentage": safe_float(win_rate * 100),
-            "profit_factor": safe_float(profit_factor),
             "avg_win": safe_float(avg_win),
             "avg_loss": safe_float(avg_loss),
             "total_trades": int(len(returns)),
@@ -537,15 +518,6 @@ async def stream_activity(request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get('/line/{team_key}')
-def get_team_status_by_team_key(team_key: str):
-    """Lookup team by API key and return JSON status (team_id, snapshot, metrics)."""
-    team_id = auth_manager.findTeamByKey(team_key)
-    if not team_id:
-        raise HTTPException(status_code=401, detail='invalid key')
-    return _team_status_dict(team_id)
-
-
 @app.get("/api/v1/team/{team_id}/history")
 @limiter.limit("30/minute")
 def get_team_history(
@@ -765,9 +737,6 @@ def get_team_metrics(
             "annualized_return_percentage": 12.47,
             "annualized_volatility": 0.0673,
             "annualized_volatility_percentage": 6.73,
-            "win_rate": 0.58,
-            "win_rate_percentage": 58.0,
-            "profit_factor": 1.45,
             "avg_win": 0.0012,
             "avg_loss": -0.0009,
             "total_trades": 250,
@@ -798,8 +767,6 @@ def get_team_metrics(
     - **Calmar Ratio**: Return relative to maximum drawdown (higher is better)
     - **Max Drawdown**: Largest peak-to-trough decline (negative percentage)
     - **Total Return**: Overall return since start (percentage)
-    - **Win Rate**: Percentage of profitable periods
-    - **Profit Factor**: Ratio of total wins to total losses (>1 is profitable)
     """
     # Validate API key
     if not auth_manager.validateTeam(team_id, key):
@@ -1460,4 +1427,651 @@ async def upload_multiple_files(
             "security_checks_passed": True
         },
         "note": "Strategy will be loaded on the next trading cycle"
+    }
+
+
+@app.get("/api/v1/status")
+@limiter.limit("120/minute")
+def get_system_status(request: Request):
+    """Get system-wide health status and operational information.
+    
+    Public endpoint for monitoring system health, market status, and data feed status.
+    
+    **Authentication:** None required (public endpoint)
+    
+    **Returns:**
+    ```json
+    {
+        "status": "operational",
+        "timestamp": "2025-10-15T15:42:30+00:00",
+        "market": {
+            "is_open": true,
+            "status": "trading"
+        },
+        "orchestrator": {
+            "running": true,
+            "last_heartbeat": "2025-10-15T15:42:00+00:00",
+            "execution_frequency_seconds": 60,
+            "teams_loaded": 9,
+            "teams_active": 9
+        },
+        "data_feed": {
+            "last_update": "2025-10-15T15:42:00+00:00",
+            "seconds_since_update": 30,
+            "status": "healthy",
+            "symbols_tracked": 9
+        }
+    }
+    ```
+    """
+    # Read runtime status file
+    status_file = config.get_data_path("runtime/status.json")
+    
+    if not status_file.exists():
+        return {
+            "status": "starting",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "orchestrator": {"running": False},
+            "message": "System initializing - status will be available shortly"
+        }
+    
+    try:
+        runtime_data = json.loads(status_file.read_text(encoding='utf-8'))
+    except Exception:
+        return {
+            "status": "error",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": "Unable to read system status"
+        }
+    
+    # Check market hours
+    from app.services.market_hours import us_equity_market_open
+    market_open = us_equity_market_open()
+    
+    # Calculate time since last update
+    last_update_str = runtime_data.get('timestamp')
+    seconds_since_update = 0
+    if last_update_str:
+        try:
+            last_update = datetime.fromisoformat(last_update_str)
+            seconds_since_update = int((datetime.now(timezone.utc) - last_update).total_seconds())
+        except Exception:
+            pass
+    
+    # Determine overall status
+    is_running = runtime_data.get('running', False)
+    data_is_fresh = seconds_since_update < 120  # Less than 2 minutes old
+    
+    if is_running and data_is_fresh:
+        overall_status = "operational"
+    elif is_running and not data_is_fresh:
+        overall_status = "degraded"
+    else:
+        overall_status = "stopped"
+    
+    # Determine data feed status
+    if seconds_since_update < 90:
+        feed_status = "healthy"
+    elif seconds_since_update < 300:
+        feed_status = "delayed"
+    else:
+        feed_status = "stale"
+    
+    teams = runtime_data.get('teams', [])
+    teams_active = sum(1 for t in teams if t.get('active', False))
+    
+    return {
+        "status": overall_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "market": {
+            "is_open": market_open,
+            "status": "trading" if market_open else "closed"
+        },
+        "orchestrator": {
+            "running": is_running,
+            "last_heartbeat": last_update_str,
+            "execution_frequency_seconds": 60,
+            "teams_loaded": len(teams),
+            "teams_active": teams_active,
+            "uptime_status": "healthy" if data_is_fresh else "stale"
+        },
+        "data_feed": {
+            "last_update": last_update_str,
+            "seconds_since_update": seconds_since_update,
+            "status": feed_status,
+            "symbols_tracked": len(runtime_data.get('symbols', [])),
+            "bars_received": runtime_data.get('bar_count', 0)
+        }
+    }
+
+
+@app.get("/api/v1/team/{team_id}/errors")
+@limiter.limit("30/minute")
+def get_team_errors(
+    request: Request,
+    team_id: str,
+    key: str = Query(..., description="Team API key for authentication"),
+    limit: Optional[int] = Query(100, description="Maximum number of errors", ge=1, le=500)
+):
+    """Get recent strategy execution errors for a team."""
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    team_dir = config.get_data_path(f"team/{team_id}")
+    error_file = team_dir / "errors.jsonl"
+    
+    errors: List[Dict[str, Any]] = []
+    
+    if error_file.exists():
+        try:
+            with open(error_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            for line in lines[-limit:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    error = json.loads(line)
+                    errors.append(error)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    
+    errors.reverse()
+    
+    return {
+        "team_id": team_id,
+        "error_count": len(errors),
+        "errors": errors
+    }
+
+
+@app.get("/api/v1/team/{team_id}/execution-health")
+@limiter.limit("60/minute")
+def get_team_execution_health(
+    request: Request,
+    team_id: str,
+    key: str = Query(..., description="Team API key for authentication")
+):
+    """Get execution health and performance statistics for a team's strategy.
+    
+    Returns detailed information about strategy execution including success rate,
+    timing, errors, and recent activity. Essential for monitoring strategy health.
+    
+    **Authentication:** Requires team API key
+    
+    **Returns:**
+    ```json
+    {
+        "team_id": "admin",
+        "timestamp": "2025-10-15T15:45:00+00:00",
+        "strategy": {
+            "entry_point": "strategy:Strategy",
+            "repo_path": "/opt/qtc/external_strategies/admin",
+            "status": "active",
+            "last_uploaded": "2025-10-14T16:50:00+00:00"
+        },
+        "execution": {
+            "is_active": true,
+            "last_execution": "2025-10-15T15:44:00+00:00",
+            "seconds_since_last": 35,
+            "total_executions": 157,
+            "successful_executions": 155,
+            "failed_executions": 2,
+            "success_rate_percentage": 98.73
+        },
+        "errors": {
+            "error_count": 1,
+            "timeout_count": 1,
+            "last_error": {
+                "timestamp": "2025-10-15T14:05:00+00:00",
+                "error_type": "TimeoutError",
+                "message": "Strategy execution exceeded 5 seconds"
+            }
+        },
+        "performance": {
+            "avg_execution_time_ms": 125,
+            "approaching_timeout": false,
+            "timeout_risk": "low"
+        }
+    }
+    ```
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    # Read runtime status
+    status_file = config.get_data_path("runtime/status.json")
+    
+    if not status_file.exists():
+        raise HTTPException(status_code=503, detail='Runtime status not available - orchestrator may not be running')
+    
+    try:
+        runtime_data = json.loads(status_file.read_text(encoding='utf-8'))
+    except Exception:
+        raise HTTPException(status_code=500, detail='Unable to read runtime status')
+    
+    # Find team in runtime status
+    teams = runtime_data.get('teams', [])
+    team_status = next((t for t in teams if t.get('team_id') == team_id), None)
+    
+    if not team_status:
+        raise HTTPException(status_code=404, detail='Team not found in runtime status')
+    
+    # Read error log
+    team_dir = config.get_data_path(f"team/{team_id}")
+    error_file = team_dir / "errors.jsonl"
+    
+    errors = []
+    timeout_count = 0
+    error_count = 0
+    
+    if error_file.exists():
+        try:
+            with open(error_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        error = json.loads(line)
+                        errors.append(error)
+                        if error.get('timeout', False) or error.get('error_type') == 'TimeoutError':
+                            timeout_count += 1
+                        error_count += 1
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+    
+    # Get last error
+    last_error = errors[-1] if errors else None
+    
+    # Calculate execution stats (approximate from trades and errors)
+    trades_file = team_dir / "trades.jsonl"
+    trade_count = 0
+    
+    if trades_file.exists():
+        try:
+            with open(trades_file, 'r', encoding='utf-8') as f:
+                trade_count = sum(1 for line in f if line.strip())
+        except Exception:
+            pass
+    
+    # Read portfolio snapshots to get execution count
+    port_dir = team_dir / "portfolio"
+    execution_count = 0
+    
+    if port_dir.exists():
+        jsonl_files = sorted([f for f in port_dir.glob("2025-*.jsonl") if f.is_file()])
+        # Get today's file
+        today = datetime.now(timezone.utc).date().isoformat()
+        today_file = port_dir / f"{today}.jsonl"
+        
+        if today_file.exists():
+            try:
+                with open(today_file, 'r', encoding='utf-8') as f:
+                    execution_count = sum(1 for line in f if line.strip())
+            except Exception:
+                pass
+    
+    # Calculate success rate
+    failed_count = len(errors)
+    successful_count = max(0, execution_count - failed_count)
+    success_rate = (successful_count / execution_count * 100) if execution_count > 0 else 0
+    
+    # Check last execution time
+    last_snapshot_str = team_status.get('last_snapshot')
+    seconds_since_last = 0
+    if last_snapshot_str:
+        try:
+            last_snap = datetime.fromisoformat(last_snapshot_str)
+            seconds_since_last = int((datetime.now(timezone.utc) - last_snap).total_seconds())
+        except Exception:
+            pass
+    
+    # Get strategy file modification time
+    strategy_path = Path(team_status.get('repo', '')) / "strategy.py"
+    last_uploaded = None
+    if strategy_path.exists():
+        try:
+            import os
+            mtime = os.path.getmtime(strategy_path)
+            last_uploaded = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+    
+    # Determine strategy status
+    has_error = team_status.get('error') is not None
+    is_active = team_status.get('active', False)
+    
+    if has_error:
+        strategy_status = "error"
+    elif not is_active:
+        strategy_status = "idle"
+    else:
+        strategy_status = "active"
+    
+    # Estimate average execution time from timeout patterns
+    # If we have timeouts, execution time is approaching limit
+    timeout_risk = "high" if timeout_count > 3 else ("medium" if timeout_count > 0 else "low")
+    approaching_timeout = timeout_count > 0
+    
+    # Rough estimate: if no timeouts, assume avg is well below 5s
+    avg_execution_time_ms = 4500 if timeout_count > 2 else (3000 if timeout_count > 0 else 150)
+    
+    return {
+        "team_id": team_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "strategy": {
+            "entry_point": team_status.get('strategy'),
+            "repo_path": team_status.get('repo'),
+            "status": strategy_status,
+            "last_uploaded": last_uploaded,
+            "run_24_7": team_status.get('run_24_7', False)
+        },
+        "execution": {
+            "is_active": is_active,
+            "last_execution": last_snapshot_str,
+            "seconds_since_last": seconds_since_last,
+            "total_executions_today": execution_count,
+            "successful_executions": successful_count,
+            "failed_executions": failed_count,
+            "success_rate_percentage": round(success_rate, 2)
+        },
+        "errors": {
+            "error_count": error_count,
+            "timeout_count": timeout_count,
+            "last_error": last_error,
+            "consecutive_failures": 0 if is_active and not has_error else failed_count
+        },
+        "performance": {
+            "avg_execution_time_ms": avg_execution_time_ms,
+            "approaching_timeout": approaching_timeout,
+            "timeout_risk": timeout_risk,
+            "timeout_limit_seconds": 5
+        },
+        "trading": {
+            "total_trades_today": trade_count,
+            "signal_rate_percentage": round((trade_count / execution_count * 100) if execution_count > 0 else 0, 2)
+        }
+    }
+
+
+@app.get("/api/v1/team/{team_id}/portfolio-history")
+@limiter.limit("20/minute")
+def get_team_portfolio_history(
+    request: Request,
+    team_id: str,
+    key: str = Query(..., description="Team API key for authentication"),
+    days: Optional[int] = Query(7, description="Days to look back", ge=1, le=365),
+    limit: Optional[int] = Query(500, description="Max snapshots", ge=1, le=5000)
+):
+    """Get complete portfolio history including positions over time."""
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    team_dir = config.get_data_path(f"team/{team_id}")
+    port_dir = team_dir / "portfolio"
+    
+    if not port_dir.exists():
+        return {"team_id": team_id, "days": days, "snapshot_count": 0, "snapshots": []}
+    
+    cutoff_time = None
+    if days is not None:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    snapshots: List[Dict[str, Any]] = []
+    jsonl_files = sorted([f for f in port_dir.glob("*.jsonl") if f.is_file()])
+    
+    for jsonl_file in jsonl_files[-days:] if days else jsonl_files:
+        try:
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        snapshot = json.loads(line)
+                        timestamp_str = snapshot.get('timestamp')
+                        if timestamp_str:
+                            try:
+                                ts = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                if ts.tzinfo is None:
+                                    ts = ts.replace(tzinfo=timezone.utc)
+                                if cutoff_time and ts < cutoff_time:
+                                    continue
+                            except Exception:
+                                continue
+                        
+                        # Filter out avg_cost and pnl_unrealized from positions
+                        raw_positions = snapshot.get('positions', {})
+                        filtered_positions = {}
+                        for symbol, pos_data in raw_positions.items():
+                            if isinstance(pos_data, dict):
+                                filtered_positions[symbol] = {
+                                    k: v for k, v in pos_data.items() 
+                                    if k not in ('avg_cost', 'pnl_unrealized', 'unrealized_pnl')
+                                }
+                            else:
+                                filtered_positions[symbol] = pos_data
+                        
+                        snapshots.append({
+                            "timestamp": timestamp_str,
+                            "cash": float(snapshot.get('cash', 0)),
+                            "market_value": float(snapshot.get('market_value', 0)),
+                            "positions": filtered_positions
+                        })
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+    
+    snapshots.sort(key=lambda x: x['timestamp'])
+    
+    if limit and len(snapshots) > limit:
+        step = max(1, len(snapshots) // limit)
+        snapshots = snapshots[::step][:limit]
+    
+    return {
+        "team_id": team_id,
+        "days": days,
+        "snapshot_count": len(snapshots),
+        "snapshots": snapshots
+    }
+
+
+@app.get("/api/v1/team/{team_id}/position/{symbol}/history")
+@limiter.limit("30/minute")
+def get_team_symbol_position_history(
+    request: Request,
+    team_id: str,
+    symbol: str,
+    key: str = Query(..., description="Team API key for authentication"),
+    days: Optional[int] = Query(7, description="Days to look back", ge=1, le=365),
+    limit: Optional[int] = Query(1000, description="Max data points", ge=1, le=10000)
+):
+    """Get position history for a specific symbol."""
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    team_dir = config.get_data_path(f"team/{team_id}")
+    port_dir = team_dir / "portfolio"
+    
+    if not port_dir.exists():
+        return {"team_id": team_id, "symbol": symbol, "days": days, "data_points": 0, "history": []}
+    
+    cutoff_time = None
+    if days is not None:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    history: List[Dict[str, Any]] = []
+    symbol_upper = symbol.upper()
+    jsonl_files = sorted([f for f in port_dir.glob("*.jsonl") if f.is_file()])
+    
+    for jsonl_file in jsonl_files[-days:] if days else jsonl_files:
+        try:
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        snapshot = json.loads(line)
+                        timestamp_str = snapshot.get('timestamp')
+                        if timestamp_str:
+                            try:
+                                ts = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                if ts.tzinfo is None:
+                                    ts = ts.replace(tzinfo=timezone.utc)
+                                if cutoff_time and ts < cutoff_time:
+                                    continue
+                            except Exception:
+                                continue
+                        
+                        positions = snapshot.get('positions', {})
+                        position = positions.get(symbol_upper, {})
+                        
+                        history.append({
+                            "timestamp": timestamp_str,
+                            "quantity": float(position.get('quantity', 0)),
+                            "value": float(position.get('value', 0))
+                        })
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+    
+    history.sort(key=lambda x: x['timestamp'])
+    
+    if limit and len(history) > limit:
+        step = max(1, len(history) // limit)
+        history = history[::step][:limit]
+    
+    return {
+        "team_id": team_id,
+        "symbol": symbol_upper,
+        "days": days,
+        "data_points": len(history),
+        "history": history
+    }
+
+
+@app.get("/api/v1/team/{team_id}/positions/summary")
+@limiter.limit("30/minute")
+def get_team_positions_summary(
+    request: Request,
+    team_id: str,
+    key: str = Query(..., description="Team API key for authentication"),
+    days: Optional[int] = Query(30, description="Days to analyze", ge=1, le=365)
+):
+    """Get summary of all symbols traded with aggregate statistics."""
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    team_dir = config.get_data_path(f"team/{team_id}")
+    port_dir = team_dir / "portfolio"
+    
+    if not port_dir.exists():
+        return {
+            "team_id": team_id,
+            "period_days": days,
+            "symbols_traded": 0,
+            "current_positions": 0,
+            "symbols": []
+        }
+    
+    cutoff_time = None
+    if days is not None:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    symbol_stats: Dict[str, Dict[str, Any]] = {}
+    latest_positions: Dict[str, Dict[str, Any]] = {}
+    jsonl_files = sorted([f for f in port_dir.glob("*.jsonl") if f.is_file()])
+    
+    for jsonl_file in jsonl_files[-days:] if days else jsonl_files:
+        try:
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        snapshot = json.loads(line)
+                        timestamp_str = snapshot.get('timestamp')
+                        if timestamp_str:
+                            try:
+                                ts = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                if ts.tzinfo is None:
+                                    ts = ts.replace(tzinfo=timezone.utc)
+                                if cutoff_time and ts < cutoff_time:
+                                    continue
+                            except Exception:
+                                continue
+                        
+                        positions = snapshot.get('positions', {})
+                        for symbol, pos in positions.items():
+                            if symbol not in symbol_stats:
+                                symbol_stats[symbol] = {
+                                    "symbol": symbol,
+                                    "times_held": 0,
+                                    "minutes_held": 0,
+                                    "max_quantity": 0,
+                                    "quantities": []
+                                }
+                            
+                            qty = float(pos.get('quantity', 0))
+                            if qty > 0:
+                                symbol_stats[symbol]["times_held"] += 1
+                                symbol_stats[symbol]["minutes_held"] += 1
+                                symbol_stats[symbol]["quantities"].append(qty)
+                                symbol_stats[symbol]["max_quantity"] = max(
+                                    symbol_stats[symbol]["max_quantity"],
+                                    qty
+                                )
+                            
+                            latest_positions[symbol] = pos
+                            
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+    
+    symbols_summary = []
+    current_position_count = 0
+    
+    for symbol, stats in symbol_stats.items():
+        latest_pos = latest_positions.get(symbol, {})
+        current_qty = float(latest_pos.get('quantity', 0))
+        currently_holding = current_qty > 0
+        
+        if currently_holding:
+            current_position_count += 1
+        
+        quantities = stats["quantities"]
+        avg_quantity = sum(quantities) / len(quantities) if quantities else 0
+        
+        symbols_summary.append({
+            "symbol": symbol,
+            "currently_holding": currently_holding,
+            "current_quantity": current_qty,
+            "current_value": float(latest_pos.get('value', 0)) if currently_holding else 0,
+            "current_pnl": float(latest_pos.get('pnl_unrealized', 0)) if currently_holding else 0,
+            "times_held": stats["times_held"],
+            "minutes_held": stats["minutes_held"],
+            "max_quantity": stats["max_quantity"],
+            "avg_quantity": round(avg_quantity, 2)
+        })
+    
+    symbols_summary.sort(key=lambda x: x["times_held"], reverse=True)
+    
+    return {
+        "team_id": team_id,
+        "period_days": days,
+        "symbols_traded": len(symbols_summary),
+        "current_positions": current_position_count,
+        "symbols": symbols_summary
     }

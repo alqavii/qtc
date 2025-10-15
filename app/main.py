@@ -471,18 +471,43 @@ class QTCAlphaOrchestrator:
                 timeout=timeout_sec,
             )
         except Exception as e:
+            # Log to global error handler
             error_handler_instance.handle_strategy_error(
                 strategy_name=strat.__class__.__name__, error=e, team_id=team_key
             )
+            
+            # Log to team-specific error file
+            error_info = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error_type": e.__class__.__name__,
+                "message": str(e),
+                "strategy": strat.__class__.__name__,
+                "timeout": isinstance(e, asyncio.TimeoutError),
+                "phase": "signal_generation"
+            }
+            trade_executor.appendStrategyError(team_key, error_info)
             return
         if not raw:
             return
         try:
             signal = StrategySignal.model_validate(raw)
         except Exception as e:
+            # Log to global error handler
             error_handler_instance.handle_strategy_error(
                 strategy_name=strat.__class__.__name__, error=e, team_id=team_key
             )
+            
+            # Log to team-specific error file
+            error_info = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error_type": e.__class__.__name__,
+                "message": str(e),
+                "strategy": strat.__class__.__name__,
+                "timeout": False,
+                "phase": "signal_validation",
+                "signal_data": str(raw)[:200]  # First 200 chars of invalid signal
+            }
+            trade_executor.appendStrategyError(team_key, error_info)
             return
 
         # Execute trade
