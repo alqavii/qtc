@@ -140,7 +140,7 @@ teams:
     git_url: https://github.com/org/team-alpha-strategy.git
     branch: main
     entry_point: strategy:MyStrategy
-    initial_cash: 250000
+    initial_cash: 10000
 ```
 - On startup, each team gets an API key in `data/api_keys.json` (existing keys are preserved).
 - Strategies are shallow-cloned into `external_strategies/�` and loaded dynamically.
@@ -148,7 +148,7 @@ teams:
 B) From local folders (no Git)
 ```bash
 python -m app.main \
-  --teams "Team One;./strategy_starter;strategy:MyStrategy;100000" \
+  --teams "Team One;./strategy_starter;strategy:MyStrategy;10000" \
   --teams "Team Two;./strategy_starter;strategy:MyStrategy;150000"
 ```
 

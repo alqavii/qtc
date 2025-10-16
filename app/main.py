@@ -106,7 +106,7 @@ class QTCAlphaOrchestrator:
         name: str,
         repo_path: str,
         entry_point: str,
-        initial_cash: Decimal = Decimal("100000"),
+        initial_cash: Decimal = Decimal("10000"),
         params: Optional[Dict[str, Any]] = None,
     ) -> Team:
         """Create a new trading team using a user-provided strategy module."""
@@ -475,7 +475,7 @@ class QTCAlphaOrchestrator:
             error_handler_instance.handle_strategy_error(
                 strategy_name=strat.__class__.__name__, error=e, team_id=team_key
             )
-            
+
             # Log to team-specific error file
             error_info = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -483,7 +483,7 @@ class QTCAlphaOrchestrator:
                 "message": str(e),
                 "strategy": strat.__class__.__name__,
                 "timeout": isinstance(e, asyncio.TimeoutError),
-                "phase": "signal_generation"
+                "phase": "signal_generation",
             }
             trade_executor.appendStrategyError(team_key, error_info)
             return
@@ -496,7 +496,7 @@ class QTCAlphaOrchestrator:
             error_handler_instance.handle_strategy_error(
                 strategy_name=strat.__class__.__name__, error=e, team_id=team_key
             )
-            
+
             # Log to team-specific error file
             error_info = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -505,7 +505,7 @@ class QTCAlphaOrchestrator:
                 "strategy": strat.__class__.__name__,
                 "timeout": False,
                 "phase": "signal_validation",
-                "signal_data": str(raw)[:200]  # First 200 chars of invalid signal
+                "signal_data": str(raw)[:200],  # First 200 chars of invalid signal
             }
             trade_executor.appendStrategyError(team_key, error_info)
             return
@@ -790,7 +790,7 @@ def _load_teams_from_registry(
         raw_name = item.get("team_id") or item.get("name") or "team"
         name = slugify(raw_name)
         entry_point = item.get("entry_point", "strategy:Strategy")
-        cash = Decimal(str(item.get("initial_cash", "100000")))
+        cash = Decimal(str(item.get("initial_cash", "10000")))
         run_24_7 = bool(item.get("run_24_7", False))
         params = item.get("params", {}) or {}
 
@@ -832,9 +832,7 @@ def _load_teams_from_registry(
                     use_repo.resolve() == (strat_root / name).resolve()
                 ):
                     if not (use_repo / "strategy.py").exists():
-                        raise FileNotFoundError(
-                            f"strategy.py not found in {use_repo}"
-                        )
+                        raise FileNotFoundError(f"strategy.py not found in {use_repo}")
                     stable = use_repo
                 else:
                     stable = _prepare_strategy_workspace(name, use_repo)

@@ -1,6 +1,6 @@
 import importlib.util
 from pathlib import Path
-from typing import Any, Optional, Protocol, TypedDict, runtime_checkable, cast
+from typing import Any, Optional, Protocol, runtime_checkable, cast
 from app.models.trading import StrategySignal
 
 
@@ -11,8 +11,7 @@ class _StrategyProtocol(Protocol):
         team: dict[str, Any],
         bars: dict[str, Any],
         current_prices: dict[str, float],
-    ) -> Optional[dict[str, Any]]:
-        ...
+    ) -> Optional[dict[str, Any]]: ...
 
 
 def _load_class_from_file(module_file: Path, class_name: str) -> type[Any]:
@@ -26,7 +25,9 @@ def _load_class_from_file(module_file: Path, class_name: str) -> type[Any]:
     return cast(type[Any], getattr(mod, class_name))
 
 
-def load_strategy_from_folder(folder: Path | str, entry_point: str) -> _StrategyProtocol:
+def load_strategy_from_folder(
+    folder: Path | str, entry_point: str
+) -> _StrategyProtocol:
     """
     folder: path to team repo folder
     entry_point: 'file_without_py:ClassName' e.g. 'strategy:MeanRevStrategy'
@@ -40,15 +41,15 @@ def load_strategy_from_folder(folder: Path | str, entry_point: str) -> _Strategy
     StrategyCls = _load_class_from_file(module_file, class_name)
     strategy: _StrategyProtocol = cast(_StrategyProtocol, StrategyCls())
 
-
     _io_test_strategy(strategy)
 
     return strategy
 
+
 def _io_test_strategy(strategy: _StrategyProtocol) -> None:
     """Runs generate_signal once with dummy data"""
-    
-    team = {"id": "test", "cash": 100000}
+
+    team = {"id": "test", "cash": 10000}
     bars = {"AAPL": {"close": [150.0], "volume": [1000]}}
     prices = {"AAPL": 150.0}
 

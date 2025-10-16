@@ -106,7 +106,7 @@ def _update_registry_repo_dir(team_id: str, repo_dir: Path) -> None:
                 "team_id": team_id,
                 "repo_dir": str(repo_dir),
                 "entry_point": "strategy:Strategy",
-                "initial_cash": 100000,
+                "initial_cash": 10000,
                 "run_24_7": False,
             }
         )
@@ -552,7 +552,7 @@ def main() -> None:
         default=None,
         help="Git URL for the team's strategy (default: https://github.com/org/strategy.git)",
     )
-    ap.add_argument("--cash", dest="initial_cash", type=int, default=100000)
+    ap.add_argument("--cash", dest="initial_cash", type=int, default=10000)
     ap.add_argument(
         "--run-24-7",
         dest="run_24_7",
@@ -681,7 +681,7 @@ def main() -> None:
                     "git_url": args.url,
                     "branch": args.branch,
                     "entry_point": "strategy:Strategy",
-                    "initial_cash": 100000,
+                    "initial_cash": 10000,
                     "run_24_7": False,
                 }
             )
