@@ -22,11 +22,12 @@ from app.models.ticker_data import MinuteBar
 from app.models.trading import StrategySignal, TradeRequest
 from app.performance.performance_tracker import performance_tracker
 from app.config.environments import EnvironmentConfig
-from app.telemetry import error_handler_instance, configure_logging
+from app.telemetry.error_handler import error_handler_instance
+from app.telemetry.logging_config import configure_logging
 from app.loaders.git_fetch import sync_all_from_registry
 from app.services.data_api import StrategyDataAPI
 from app.services.market_hours import us_equity_market_open
-from app.core import slugify
+from app.core.identifiers import slugify
 import shutil
 from app.cli.team_manage import (
     pullstrat as tm_pullstrat,

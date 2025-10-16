@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config.environments import EnvironmentConfig
 from app.services.auth import auth_manager
-from app.telemetry import subscribe_activity
+from app.telemetry.activity import subscribe_activity
 
 
 ROOT = Path(__file__).parents[2]

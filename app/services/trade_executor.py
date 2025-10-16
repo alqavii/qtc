@@ -12,7 +12,7 @@ from app.models.trading import (
     PositionView,
     PendingOrder,
 )
-from app.telemetry import record_activity
+from app.telemetry.activity import record_activity
 from app.config.environments import config
 import logging
 
@@ -55,11 +55,11 @@ class TradeExecutor:
             broker_order_id: Optional[str] = None
             broker_error: Optional[str] = None
             should_update_portfolio = True  # Track if we should update portfolio
-            
+
             if self._broker is not None and order_type in ("market", "limit"):
                 try:
                     client_id = f"{req.team_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
-                    
+
                     # Place order based on type
                     if order_type == "market":
                         order_id = self._broker.placeMarketOrder(
@@ -67,10 +67,14 @@ class TradeExecutor:
                         )
                     elif order_type == "limit":
                         order_id = self._broker.placeLimitOrder(
-                            symbol, side, quantity, limit_price=price,
-                            time_in_force=req.time_in_force, clientOrderId=client_id
+                            symbol,
+                            side,
+                            quantity,
+                            limit_price=price,
+                            time_in_force=req.time_in_force,
+                            clientOrderId=client_id,
                         )
-                    
+
                     broker_order_id = order_id
                     logger.info(
                         "Alpaca %s order submitted: %s for %s %s %s @ %s",
@@ -81,12 +85,13 @@ class TradeExecutor:
                         quantity,
                         price,
                     )
-                    
+
                     # Handle order type-specific logic
                     if order_type == "market":
                         # Get actual execution price from Alpaca for market orders
                         try:
                             import time
+
                             time.sleep(0.5)  # Brief delay to allow order to fill
                             order_details = self._broker.getOrderById(order_id)
                             filled_price = order_details.get("filled_avg_price")
@@ -106,11 +111,11 @@ class TradeExecutor:
                             # Fall back to requested price
                         # Market orders update portfolio immediately
                         should_update_portfolio = True
-                        
+
                     elif order_type == "limit":
                         # Store as pending order - will be reconciled later
                         from app.services.order_tracker import order_tracker
-                        
+
                         pending_order = PendingOrder(
                             order_id=order_id,
                             team_id=req.team_id,
@@ -135,7 +140,7 @@ class TradeExecutor:
                         # Don't update portfolio yet - wait for fill
                         should_update_portfolio = False
                         return True, f"Limit order placed: {order_id}"
-                    
+
                 except Exception as be:  # noqa: BLE001
                     broker_error = str(be)
                     logger.error("Alpaca order submission failed: %s", be)
@@ -219,7 +224,7 @@ class TradeExecutor:
             if self._broker is not None and order_type in ("market", "limit"):
                 try:
                     client_id = f"{team.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
-                    
+
                     # Place order based on type
                     if order_type == "market":
                         order_id = self._broker.placeMarketOrder(
@@ -227,10 +232,13 @@ class TradeExecutor:
                         )
                     elif order_type == "limit":
                         order_id = self._broker.placeLimitOrder(
-                            symbol, side, quantity, limit_price=price,
-                            clientOrderId=client_id
+                            symbol,
+                            side,
+                            quantity,
+                            limit_price=price,
+                            clientOrderId=client_id,
                         )
-                    
+
                     broker_order_id = order_id
                     logger.info(
                         "Alpaca %s order submitted: %s for %s %s %s @ %s",
@@ -241,11 +249,12 @@ class TradeExecutor:
                         quantity,
                         price,
                     )
-                    
+
                     # Get actual execution price for market orders
                     if order_type == "market":
                         try:
                             import time
+
                             time.sleep(0.5)
                             order_details = self._broker.getOrderById(order_id)
                             filled_price = order_details.get("filled_avg_price")
@@ -260,7 +269,7 @@ class TradeExecutor:
                     elif order_type == "limit":
                         # Store as pending order for background reconciliation
                         from app.services.order_tracker import order_tracker
-                        
+
                         pending_order = PendingOrder(
                             order_id=broker_order_id,
                             team_id=team.name,
@@ -279,7 +288,7 @@ class TradeExecutor:
                         )
                         order_tracker.store_pending_order(pending_order)
                         return True, f"Limit order placed: {broker_order_id}"
-                    
+
                 except Exception as be:  # noqa: BLE001
                     broker_error = str(be)
                     logger.error("Alpaca order submission failed: %s", be)
@@ -782,7 +791,7 @@ class TradeExecutor:
 
     def appendStrategyError(self, team_id: str, error_info: Dict[str, Any]) -> None:
         """Log strategy execution errors per team.
-        
+
         Args:
             team_id: Team identifier
             error_info: Dictionary containing error details (timestamp, error_type, message, etc.)
@@ -791,10 +800,14 @@ class TradeExecutor:
         team_dir.mkdir(parents=True, exist_ok=True)
         error_file = team_dir / "errors.jsonl"
         import json
-        
+
         with open(error_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(error_info, default=str) + "\n")
-        logger.debug("Strategy error logged for team %s: %s", team_id, error_info.get("error_type"))
+        logger.debug(
+            "Strategy error logged for team %s: %s",
+            team_id,
+            error_info.get("error_type"),
+        )
 
 
 # Global trade executor instance
