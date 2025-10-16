@@ -27,10 +27,11 @@ crypto_client = CryptoHistoricalDataClient(_ALPACA_KEY, _ALPACA_SECRET)
 class TickerAdapter:
     """
     Adapter for fetching market data from Alpaca Markets.
-    
+
     All equity data is fetched from IEX (Investors Exchange) feed to ensure
     consistent pricing from a single exchange source, avoiding SIP data variations.
     """
+
     _CRYPTO_SET = {
         "BTC",
         "ETH",

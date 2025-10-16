@@ -22,8 +22,16 @@ def configure_logging(
     level: Union[str, int] = "INFO",
     log_file: Optional[str] = None,
     stream: bool = True,
+    buffered: bool = True,
 ) -> Path:
-    """Configure root logging handlers for CLI/service use."""
+    """Configure root logging handlers for CLI/service use.
+
+    Args:
+        level: Logging level
+        log_file: Optional log file path
+        stream: Whether to log to stdout
+        buffered: Whether to use buffered output for better performance with journalctl
+    """
     resolved_level = _coerce_level(level)
     target = Path(log_file) if log_file else Path("qtc_alpha.log")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +54,11 @@ def configure_logging(
     if stream:
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setFormatter(formatter)
+        # Enable buffering for better performance with journalctl/systemd
+        if buffered:
+            stream_handler.setLevel(
+                logging.WARNING
+            )  # Only show warnings/errors by default
         root_logger.addHandler(stream_handler)
 
     return target

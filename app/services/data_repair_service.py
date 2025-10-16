@@ -1,9 +1,11 @@
 # data_repair_service.py
 import asyncio
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import List, Set, Optional
 from pathlib import Path
+from collections import deque
 
 from app.adapters.ticker_adapter import TickerAdapter
 from app.adapters.parquet_writer import ParquetWriter
@@ -11,6 +13,76 @@ from app.services.market_hours import us_equity_market_open, is_symbol_trading
 from app.config.settings import TICKER_UNIVERSE
 
 logger = logging.getLogger(__name__)
+
+
+# Non-blocking logging for data repair service
+class NonBlockingLogger:
+    """A non-blocking logger that queues log messages to prevent blocking journalctl."""
+
+    def __init__(self, name: str, max_queue_size: int = 1000):
+        self.logger = logging.getLogger(name)
+        self.queue = deque(maxlen=max_queue_size)
+        self.lock = threading.Lock()
+        self._worker_thread = None
+        self._shutdown = False
+
+    def _start_worker(self):
+        """Start the background worker thread for processing log messages."""
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            self._worker_thread = threading.Thread(
+                target=self._process_queue, daemon=True
+            )
+            self._worker_thread.start()
+
+    def _process_queue(self):
+        """Process queued log messages in a separate thread."""
+        while not self._shutdown:
+            try:
+                with self.lock:
+                    if not self.queue:
+                        continue
+                    level, message, args, kwargs = self.queue.popleft()
+
+                # Log the message without blocking
+                getattr(self.logger, level)(message, *args, **kwargs)
+
+            except Exception:
+                # If logging fails, just continue to prevent blocking
+                pass
+
+    def info(self, message, *args, **kwargs):
+        """Queue an info level log message."""
+        self._start_worker()
+        with self.lock:
+            self.queue.append(("info", message, args, kwargs))
+
+    def debug(self, message, *args, **kwargs):
+        """Queue a debug level log message."""
+        self._start_worker()
+        with self.lock:
+            self.queue.append(("debug", message, args, kwargs))
+
+    def warning(self, message, *args, **kwargs):
+        """Queue a warning level log message."""
+        self._start_worker()
+        with self.lock:
+            self.queue.append(("warning", message, args, kwargs))
+
+    def error(self, message, *args, **kwargs):
+        """Queue an error level log message."""
+        self._start_worker()
+        with self.lock:
+            self.queue.append(("error", message, args, kwargs))
+
+    def exception(self, message, *args, **kwargs):
+        """Queue an exception level log message."""
+        self._start_worker()
+        with self.lock:
+            self.queue.append(("exception", message, args, kwargs))
+
+
+# Use non-blocking logger for data repair service
+data_repair_logger = NonBlockingLogger(__name__)
 
 
 class DataRepairService:
@@ -34,10 +106,10 @@ class DataRepairService:
     async def start(self) -> None:
         """Start the data repair service."""
         if self._running:
-            logger.warning("Data repair service is already running")
+            data_repair_logger.warning("Data repair service is already running")
             return
 
-        logger.info("Starting data repair service...")
+        data_repair_logger.info("Starting data repair service...")
         self._running = True
         self._task = asyncio.create_task(self._repair_loop())
 
@@ -46,7 +118,7 @@ class DataRepairService:
         if not self._running:
             return
 
-        logger.info("Stopping data repair service...")
+        data_repair_logger.info("Stopping data repair service...")
         self._running = False
         if self._task:
             self._task.cancel()
@@ -54,7 +126,7 @@ class DataRepairService:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("Data repair service stopped")
+        data_repair_logger.info("Data repair service stopped")
 
     async def _repair_loop(self) -> None:
         """Main repair loop that runs at different intervals based on market hours."""
@@ -71,7 +143,9 @@ class DataRepairService:
                         not hasattr(self, "_last_market_state")
                         or self._last_market_state != "open"
                     ):
-                        logger.info("Market hours: using 15-minute repair interval")
+                        data_repair_logger.info(
+                            "Market hours: using 15-minute repair interval"
+                        )
                         self._last_market_state = "open"
                 else:
                     interval_minutes = 60
@@ -80,7 +154,9 @@ class DataRepairService:
                         not hasattr(self, "_last_market_state")
                         or self._last_market_state != "closed"
                     ):
-                        logger.info("Off-hours: using 60-minute repair interval")
+                        data_repair_logger.info(
+                            "Off-hours: using 60-minute repair interval"
+                        )
                         self._last_market_state = "closed"
 
                 # Perform repair
@@ -92,20 +168,26 @@ class DataRepairService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception(f"Error in data repair loop: {e}")
+                data_repair_logger.exception(f"Error in data repair loop: {e}")
                 # Wait a bit before retrying to avoid rapid error loops
                 await asyncio.sleep(60)
 
     async def _perform_repair(self, as_of: datetime) -> None:
         """Perform comprehensive data repair for all symbols."""
         try:
-            logger.info(f"Starting data repair at {as_of.isoformat()}")
+            # Only log repair start occasionally to avoid spam
+            if (
+                not hasattr(self, "_last_repair_start_log")
+                or (as_of - self._last_repair_start_log).total_seconds() > 1800
+            ):  # Log once every 30 minutes
+                data_repair_logger.info(f"Starting data repair at {as_of.isoformat()}")
+                self._last_repair_start_log = as_of
 
             # Get all symbols that should be trading
             trading_symbols = self._get_trading_symbols(as_of)
 
             if not trading_symbols:
-                logger.debug("No symbols to repair")
+                data_repair_logger.debug("No symbols to repair")
                 return
 
             # Check for gaps in recent data
@@ -123,29 +205,37 @@ class DataRepairService:
                         if repaired > 0:
                             symbols_with_gaps.append(f"{symbol}({repaired})")
                 except Exception as e:
-                    logger.warning(f"Failed to repair {symbol}: {e}")
+                    data_repair_logger.warning(f"Failed to repair {symbol}: {e}")
 
             self._last_repair_time = as_of
 
-            # Only log summary, not individual repairs
+            # Only log summary if there were repairs, and limit frequency
             if repairs_made > 0:
-                logger.info(
-                    f"Data repair completed: {repairs_made} gaps repaired across {len(symbols_with_gaps)} symbols"
-                )
-                # Log symbols with repairs only if there are few of them
-                if len(symbols_with_gaps) <= 5:
-                    logger.info(f"Repaired symbols: {', '.join(symbols_with_gaps)}")
+                # Only log if we haven't logged repairs recently
+                if (
+                    not hasattr(self, "_last_repair_log")
+                    or (as_of - self._last_repair_log).total_seconds() > 300
+                ):  # Log at most every 5 minutes
+                    data_repair_logger.info(
+                        f"Data repair completed: {repairs_made} gaps repaired across {len(symbols_with_gaps)} symbols"
+                    )
+                    # Log symbols with repairs only if there are very few of them
+                    if len(symbols_with_gaps) <= 3:
+                        data_repair_logger.info(
+                            f"Repaired symbols: {', '.join(symbols_with_gaps)}"
+                        )
+                    self._last_repair_log = as_of
             else:
-                # Only log "no gaps" occasionally to avoid spam
+                # Only log "no gaps" very occasionally to avoid spam
                 if (
                     not hasattr(self, "_last_no_gaps_log")
-                    or (as_of - self._last_no_gaps_log).total_seconds() > 3600
-                ):  # Log once per hour
-                    logger.debug("Data repair completed: no gaps found")
+                    or (as_of - self._last_no_gaps_log).total_seconds() > 7200
+                ):  # Log once every 2 hours
+                    data_repair_logger.debug("Data repair completed: no gaps found")
                     self._last_no_gaps_log = as_of
 
         except Exception as e:
-            logger.exception(f"Error during data repair: {e}")
+            data_repair_logger.exception(f"Error during data repair: {e}")
 
     def _get_trading_symbols(self, as_of: datetime) -> Set[str]:
         """Get all symbols that should be trading at the given time."""
@@ -184,7 +274,7 @@ class DataRepairService:
                     gaps.append(expected_ts)
 
         except Exception as e:
-            logger.warning(f"Error detecting gaps for {symbol}: {e}")
+            data_repair_logger.warning(f"Error detecting gaps for {symbol}: {e}")
 
         return gaps
 
@@ -204,7 +294,7 @@ class DataRepairService:
             return df.to_dict("records")
 
         except Exception as e:
-            logger.debug(f"No existing data found for {symbol}: {e}")
+            data_repair_logger.debug(f"No existing data found for {symbol}: {e}")
             return []
 
     def _generate_expected_timestamps(
@@ -269,17 +359,24 @@ class DataRepairService:
                             # Write the missing bars (idempotent operation)
                             ParquetWriter.writeDay(missing_bars, root=str(self.root))
                             repaired_count += len(missing_bars)
-                            logger.debug(
-                                f"Repaired {len(missing_bars)} bars for {symbol} on {gap_date}"
-                            )
+                            # Only log individual repairs at debug level and very rarely
+                            if (
+                                not hasattr(self, "_last_individual_repair_log")
+                                or (gap_date - self._last_individual_repair_log).days
+                                > 0
+                            ):
+                                data_repair_logger.debug(
+                                    f"Repaired {len(missing_bars)} bars for {symbol} on {gap_date}"
+                                )
+                                self._last_individual_repair_log = gap_date
 
                 except Exception as e:
-                    logger.warning(
+                    data_repair_logger.warning(
                         f"Failed to repair gaps for {symbol} on {gap_date}: {e}"
                     )
 
         except Exception as e:
-            logger.warning(f"Error repairing gaps for {symbol}: {e}")
+            data_repair_logger.warning(f"Error repairing gaps for {symbol}: {e}")
 
         return repaired_count
 
