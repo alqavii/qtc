@@ -92,6 +92,12 @@ class QTCAlphaOrchestrator:
         self._daily_sync_task: Optional[asyncio.Task[None]] = None
         self._order_reconciliation_task: Optional[asyncio.Task[None]] = None
         # Use shared performance tracker
+        self.performance_tracker = performance_tracker
+
+        # Initialize data repair service
+        from app.services.data_repair_service import data_repair_service
+
+        self.data_repair_service = data_repair_service
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -545,17 +551,21 @@ class QTCAlphaOrchestrator:
         try:
             # Load pending orders from disk
             from app.services.order_tracker import order_tracker
+
             order_tracker.load_pending_orders()
-            
+
             # Schedule daily registry sync at 01:00 UTC if a registry path is known
             if self._registry_path:
                 self._daily_sync_task = asyncio.create_task(self._daily_registry_sync())
-            
+
             # Start background order reconciliation (every 30 seconds)
             self._order_reconciliation_task = asyncio.create_task(
                 self._reconcile_orders_loop()
             )
-            
+
+            # Start data repair service (15min market hours, 60min off-hours)
+            await self.data_repair_service.start()
+
             # Start the minute service
             await self.minute_service.run()
         except Exception as e:
@@ -569,6 +579,9 @@ class QTCAlphaOrchestrator:
 
         # Stop the minute service
         await self.minute_service.stop()
+
+        # Stop data repair service
+        await self.data_repair_service.stop()
 
         # Save performance data per team
         for team_id in self.teams.keys():
@@ -585,26 +598,26 @@ class QTCAlphaOrchestrator:
         Runs every 30 seconds to update execution prices and order statuses.
         """
         from app.services.order_tracker import order_tracker
-        
+
         logger.info("Starting background order reconciliation loop (30s interval)...")
-        
+
         while self.running:
             try:
                 await asyncio.sleep(30)  # Check every 30 seconds
-                
+
                 # Reconcile with broker if available
                 if trade_executor._broker:
                     await order_tracker.reconcile_with_broker(trade_executor._broker)
-                
+
                 # Cleanup old orders once per hour (when minute == 0)
                 now = datetime.now(timezone.utc)
                 if now.minute == 0:
                     order_tracker.cleanup_old_orders(max_age_days=7)
-                    
+
             except Exception as e:
                 logger.error(f"Error in order reconciliation loop: {e}")
                 await asyncio.sleep(30)  # Continue despite errors
-    
+
     async def _daily_registry_sync(self) -> None:
         """Sync strategy repos from the registry daily at 01:00 UTC.
 

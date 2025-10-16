@@ -32,20 +32,40 @@ class ParquetWriter:
         outdir = self.root / f"y={y}" / f"m={m}" / f"d={d}"
         outdir.mkdir(parents=True, exist_ok=True)
         outpath = outdir / f"minute_bars-{y}-{m:02d}-{d:02d}.parquet"
-        # Append a new row group to the day's file using fastparquet
+
+        # Idempotent append: check for existing data to prevent duplication
         if outpath.exists():
+            try:
+                existing_df = pd.read_parquet(outpath)
+                if not existing_df.empty:
+                    # Create composite key for deduplication
+                    existing_df["composite_key"] = (
+                        existing_df["ticker"]
+                        + "_"
+                        + existing_df["timestamp"].astype(str)
+                    )
+                    df["composite_key"] = (
+                        df["ticker"] + "_" + df["timestamp"].astype(str)
+                    )
+
+                    # Filter out duplicates
+                    new_bars = df[
+                        ~df["composite_key"].isin(existing_df["composite_key"])
+                    ]
+                    if new_bars.empty:
+                        return  # No new data to append
+                    df = new_bars.drop("composite_key", axis=1)
+            except Exception:
+                # If we can't read existing file, proceed with append
+                pass
+
+        # Append new data
+        if not df.empty:
             df.to_parquet(
                 outpath,
                 engine="fastparquet",
                 compression="snappy",
                 append=True,
-                index=False,
-            )
-        else:
-            df.to_parquet(
-                outpath,
-                engine="fastparquet",
-                compression="snappy",
                 index=False,
             )
 
@@ -86,19 +106,40 @@ class ParquetWriter:
         outdir = Path(root) / f"y={y}" / f"m={m}" / f"d={d}"
         outdir.mkdir(parents=True, exist_ok=True)
         outpath = outdir / f"minute_bars-{y}-{m:02d}-{d:02d}.parquet"
+
+        # Idempotent write: check for existing data to prevent duplication
         if outpath.exists():
+            try:
+                existing_df = pd.read_parquet(outpath)
+                if not existing_df.empty:
+                    # Create composite key for deduplication
+                    existing_df["composite_key"] = (
+                        existing_df["ticker"]
+                        + "_"
+                        + existing_df["timestamp"].astype(str)
+                    )
+                    df["composite_key"] = (
+                        df["ticker"] + "_" + df["timestamp"].astype(str)
+                    )
+
+                    # Filter out duplicates
+                    new_bars = df[
+                        ~df["composite_key"].isin(existing_df["composite_key"])
+                    ]
+                    if new_bars.empty:
+                        return  # No new data to write
+                    df = new_bars.drop("composite_key", axis=1)
+            except Exception:
+                # If we can't read existing file, proceed with write
+                pass
+
+        # Write new data
+        if not df.empty:
             df.to_parquet(
                 outpath,
                 engine="fastparquet",
                 compression="snappy",
                 append=True,
-                index=False,
-            )
-        else:
-            df.to_parquet(
-                outpath,
-                engine="fastparquet",
-                compression="snappy",
                 index=False,
             )
 

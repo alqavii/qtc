@@ -741,20 +741,20 @@ def get_team_trades(
 def get_team_open_orders(
     request: Request,
     team_id: str,
-    key: str = Query(..., description="Team API key for authentication")
+    key: str = Query(..., description="Team API key for authentication"),
 ):
     """
     Get all open (pending) orders for a team.
-    
+
     Returns limit orders and market orders that haven't filled yet.
     Useful for monitoring pending trades and understanding why positions haven't changed.
-    
+
     **Authentication:** Requires team API key
-    
+
     **Parameters:**
     - `team_id`: Team identifier
     - `key`: Team API key for authentication
-    
+
     **Returns:**
     ```json
     {
@@ -779,12 +779,12 @@ def get_team_open_orders(
         ]
     }
     ```
-    
+
     **Order Status Values:**
     - `new` - Order accepted by broker, waiting to fill
     - `partially_filled` - Some shares filled, rest still open
     - `accepted` - Order received but not yet acknowledged
-    
+
     **Use Cases:**
     - Monitor pending limit orders
     - See why sells haven't executed
@@ -793,13 +793,13 @@ def get_team_open_orders(
     """
     # Validate API key
     if not auth_manager.validateTeam(team_id, key):
-        raise HTTPException(status_code=401, detail='Invalid API key')
-    
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
     from app.services.order_tracker import order_tracker
-    
+
     # Get open orders for this team
     orders = order_tracker.get_open_orders(team_id)
-    
+
     # Convert to dict format
     orders_list = []
     for order in orders:
@@ -812,7 +812,9 @@ def get_team_open_orders(
             "limit_price": float(order.limit_price) if order.limit_price else None,
             "status": order.status,
             "filled_qty": float(order.filled_qty),
-            "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+            "filled_avg_price": float(order.filled_avg_price)
+            if order.filled_avg_price
+            else None,
             "time_in_force": order.time_in_force,
             "created_at": order.created_at.isoformat(),
             "updated_at": order.updated_at.isoformat(),
@@ -820,11 +822,11 @@ def get_team_open_orders(
             "broker_order_id": order.broker_order_id,
         }
         orders_list.append(order_dict)
-    
+
     return {
         "team_id": team_id,
         "open_orders_count": len(orders_list),
-        "orders": orders_list
+        "orders": orders_list,
     }
 
 
@@ -834,18 +836,18 @@ def get_team_order_details(
     request: Request,
     team_id: str,
     order_id: str,
-    key: str = Query(..., description="Team API key for authentication")
+    key: str = Query(..., description="Team API key for authentication"),
 ):
     """
     Get detailed status of a specific order.
-    
+
     **Authentication:** Requires team API key
-    
+
     **Parameters:**
     - `team_id`: Team identifier
     - `order_id`: Order ID (from broker_order_id field)
     - `key`: Team API key for authentication
-    
+
     **Returns:**
     ```json
     {
@@ -867,20 +869,20 @@ def get_team_order_details(
     """
     # Validate API key
     if not auth_manager.validateTeam(team_id, key):
-        raise HTTPException(status_code=401, detail='Invalid API key')
-    
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
     from app.services.order_tracker import order_tracker
-    
+
     # Get order
     order = order_tracker.get_order_by_id(order_id)
-    
+
     if not order:
-        raise HTTPException(status_code=404, detail=f'Order {order_id} not found')
-    
+        raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+
     # Verify order belongs to this team
     if order.team_id != team_id:
-        raise HTTPException(status_code=403, detail='Order belongs to different team')
-    
+        raise HTTPException(status_code=403, detail="Order belongs to different team")
+
     return {
         "order_id": order.order_id,
         "team_id": order.team_id,
@@ -891,7 +893,9 @@ def get_team_order_details(
         "limit_price": float(order.limit_price) if order.limit_price else None,
         "status": order.status,
         "filled_qty": float(order.filled_qty),
-        "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+        "filled_avg_price": float(order.filled_avg_price)
+        if order.filled_avg_price
+        else None,
         "time_in_force": order.time_in_force,
         "created_at": order.created_at.isoformat(),
         "updated_at": order.updated_at.isoformat(),
@@ -906,18 +910,18 @@ def cancel_team_order(
     request: Request,
     team_id: str,
     order_id: str,
-    key: str = Query(..., description="Team API key for authentication")
+    key: str = Query(..., description="Team API key for authentication"),
 ):
     """
     Cancel an open order.
-    
+
     **Authentication:** Requires team API key
-    
+
     **Parameters:**
     - `team_id`: Team identifier
     - `order_id`: Order ID to cancel
     - `key`: Team API key for authentication
-    
+
     **Returns:**
     ```json
     {
@@ -927,7 +931,7 @@ def cancel_team_order(
         "status": "cancelled"
     }
     ```
-    
+
     **Errors:**
     - 404: Order not found or already filled
     - 403: Order belongs to different team
@@ -935,50 +939,50 @@ def cancel_team_order(
     """
     # Validate API key
     if not auth_manager.validateTeam(team_id, key):
-        raise HTTPException(status_code=401, detail='Invalid API key')
-    
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
     from app.services.order_tracker import order_tracker
     from app.adapters.alpaca_broker import load_broker_from_env
-    
+
     # Get order
     order = order_tracker.get_order_by_id(order_id)
-    
+
     if not order:
-        raise HTTPException(status_code=404, detail=f'Order {order_id} not found or already closed')
-    
+        raise HTTPException(
+            status_code=404, detail=f"Order {order_id} not found or already closed"
+        )
+
     # Verify order belongs to this team
     if order.team_id != team_id:
-        raise HTTPException(status_code=403, detail='Order belongs to different team')
-    
+        raise HTTPException(status_code=403, detail="Order belongs to different team")
+
     # Cancel with Alpaca
     broker = load_broker_from_env()
     if broker:
         result = broker.cancelOrder(order.broker_order_id)
-        
+
         if result.get("success"):
             # Update order status
             order.status = "cancelled"
             order.updated_at = datetime.now(timezone.utc)
-            
+
             # Remove from pending orders
             if order_id in order_tracker.pending_orders:
                 del order_tracker.pending_orders[order_id]
-            
+
             return {
                 "success": True,
                 "order_id": order_id,
                 "message": "Order cancelled successfully",
-                "status": "cancelled"
+                "status": "cancelled",
             }
         else:
             raise HTTPException(
-                status_code=500,
-                detail=f'Failed to cancel order: {result.get("error")}'
+                status_code=500, detail=f"Failed to cancel order: {result.get('error')}"
             )
     else:
         raise HTTPException(
-            status_code=503,
-            detail='Broker not available (local-only mode)'
+            status_code=503, detail="Broker not available (local-only mode)"
         )
 
 
@@ -2427,3 +2431,357 @@ def get_team_positions_summary(
         "current_positions": current_position_count,
         "symbols": symbols_summary,
     }
+
+
+# Market Data API Endpoints
+
+
+@app.get("/api/v1/market-data/{symbol}/range")
+@limiter.limit("60/minute")
+def get_market_data_range(
+    request: Request,
+    symbol: str,
+    start: str = Query(..., description="Start datetime (ISO 8601 UTC)"),
+    end: str = Query(..., description="End datetime (ISO 8601 UTC)"),
+    key: Optional[str] = Query(None, description="Team API key for authentication"),
+):
+    """Get historical market data for a symbol within a time range.
+
+    **Authentication:** Optional (public endpoint, but authenticated users get higher rate limits)
+
+    **Parameters:**
+    - `symbol`: Stock symbol (e.g., AAPL, NVDA, SPY)
+    - `start`: Start datetime in ISO 8601 format (e.g., "2025-01-15T09:30:00Z")
+    - `end`: End datetime in ISO 8601 format (e.g., "2025-01-15T16:00:00Z")
+    - `key`: Optional team API key for higher rate limits
+
+    **Returns:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "start": "2025-01-15T09:30:00+00:00",
+        "end": "2025-01-15T16:00:00+00:00",
+        "data_points": 390,
+        "data": [
+            {
+                "timestamp": "2025-01-15T09:30:00+00:00",
+                "open": 150.25,
+                "high": 150.50,
+                "low": 150.20,
+                "close": 150.45,
+                "volume": 1000000,
+                "trade_count": 5000,
+                "vwap": 150.35
+            }
+        ]
+    }
+    ```
+
+    **Use Cases:**
+    - Historical price analysis
+    - Backtesting strategies
+    - Technical indicator calculations
+    - Chart data for visualization
+    """
+    try:
+        # Parse datetime parameters
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+
+        # Validate time range (max 30 days)
+        if (end_dt - start_dt).days > 30:
+            raise HTTPException(
+                status_code=400, detail="Time range cannot exceed 30 days"
+            )
+
+        # Get data using StrategyDataAPI
+        from app.services.data_api import StrategyDataAPI
+
+        api = StrategyDataAPI()
+        df = api.getRange(symbol.upper(), start_dt, end_dt)
+
+        if df.empty:
+            return {
+                "symbol": symbol.upper(),
+                "start": start,
+                "end": end,
+                "data_points": 0,
+                "data": [],
+                "message": "No data found for the specified time range",
+            }
+
+        # Convert DataFrame to list of records
+        data = df.to_dict("records")
+
+        return {
+            "symbol": symbol.upper(),
+            "start": start,
+            "end": end,
+            "data_points": len(data),
+            "data": data,
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {e}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error retrieving market data: {e}"
+        )
+
+
+@app.get("/api/v1/market-data/{symbol}/day/{date}")
+@limiter.limit("60/minute")
+def get_market_data_day(
+    request: Request,
+    symbol: str,
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    key: Optional[str] = Query(None, description="Team API key for authentication"),
+):
+    """Get market data for a symbol for a specific trading day.
+
+    **Authentication:** Optional (public endpoint)
+
+    **Parameters:**
+    - `symbol`: Stock symbol (e.g., AAPL, NVDA, SPY)
+    - `date`: Date in YYYY-MM-DD format (e.g., "2025-01-15")
+    - `key`: Optional team API key for higher rate limits
+
+    **Returns:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "date": "2025-01-15",
+        "data_points": 390,
+        "data": [
+            {
+                "timestamp": "2025-01-15T09:30:00+00:00",
+                "open": 150.25,
+                "high": 150.50,
+                "low": 150.20,
+                "close": 150.45,
+                "volume": 1000000,
+                "trade_count": 5000,
+                "vwap": 150.35
+            }
+        ]
+    }
+    ```
+
+    **Use Cases:**
+    - Daily price analysis
+    - Intraday trading patterns
+    - Daily performance metrics
+    """
+    try:
+        # Parse date parameter
+        from datetime import date as date_type
+
+        target_date = date_type.fromisoformat(date)
+
+        # Get data using StrategyDataAPI
+        from app.services.data_api import StrategyDataAPI
+
+        api = StrategyDataAPI()
+        df = api.getDay(symbol.upper(), target_date)
+
+        if df.empty:
+            return {
+                "symbol": symbol.upper(),
+                "date": date,
+                "data_points": 0,
+                "data": [],
+                "message": "No data found for the specified date",
+            }
+
+        # Convert DataFrame to list of records
+        data = df.to_dict("records")
+
+        return {
+            "symbol": symbol.upper(),
+            "date": date,
+            "data_points": len(data),
+            "data": data,
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error retrieving market data: {e}"
+        )
+
+
+@app.get("/api/v1/market-data/{symbol}/recent/{count}")
+@limiter.limit("60/minute")
+def get_market_data_recent(
+    request: Request,
+    symbol: str,
+    count: int = Query(
+        ..., description="Number of recent bars to retrieve", ge=1, le=1000
+    ),
+    key: Optional[str] = Query(None, description="Team API key for authentication"),
+):
+    """Get the most recent market data bars for a symbol.
+
+    **Authentication:** Optional (public endpoint)
+
+    **Parameters:**
+    - `symbol`: Stock symbol (e.g., AAPL, NVDA, SPY)
+    - `count`: Number of recent bars to retrieve (1-1000)
+    - `key`: Optional team API key for higher rate limits
+
+    **Returns:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "count": 100,
+        "data_points": 100,
+        "data": [
+            {
+                "timestamp": "2025-01-15T15:59:00+00:00",
+                "open": 150.25,
+                "high": 150.50,
+                "low": 150.20,
+                "close": 150.45,
+                "volume": 1000000,
+                "trade_count": 5000,
+                "vwap": 150.35
+            }
+        ]
+    }
+    ```
+
+    **Use Cases:**
+    - Real-time price monitoring
+    - Recent trend analysis
+    - Live strategy inputs
+    """
+    try:
+        # Get data using StrategyDataAPI
+        from app.services.data_api import StrategyDataAPI
+
+        api = StrategyDataAPI()
+        df = api.getLastN(symbol.upper(), count)
+
+        if df.empty:
+            return {
+                "symbol": symbol.upper(),
+                "count": count,
+                "data_points": 0,
+                "data": [],
+                "message": "No recent data found",
+            }
+
+        # Convert DataFrame to list of records
+        data = df.to_dict("records")
+
+        return {
+            "symbol": symbol.upper(),
+            "count": count,
+            "data_points": len(data),
+            "data": data,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error retrieving market data: {e}"
+        )
+
+
+@app.get("/api/v1/market-data/symbols")
+@limiter.limit("120/minute")
+def get_available_symbols(
+    request: Request,
+    key: Optional[str] = Query(None, description="Team API key for authentication"),
+):
+    """Get list of all available trading symbols.
+
+    **Authentication:** None required (public endpoint)
+
+    **Returns:**
+    ```json
+    {
+        "symbols": ["AAPL", "NVDA", "SPY", "QQQ", "BTC", "ETH"],
+        "count": 6,
+        "equity_symbols": ["AAPL", "NVDA", "SPY", "QQQ"],
+        "crypto_symbols": ["BTC", "ETH"]
+    }
+    ```
+
+    **Use Cases:**
+    - Symbol discovery
+    - Building symbol lists for analysis
+    - Validating symbol availability
+    """
+    try:
+        from app.config.settings import TICKER_UNIVERSE
+        from app.adapters.ticker_adapter import TickerAdapter
+
+        symbols = list(TICKER_UNIVERSE)
+        equity_symbols = []
+        crypto_symbols = []
+
+        for symbol in symbols:
+            if symbol in TickerAdapter._CRYPTO_SET:
+                crypto_symbols.append(symbol)
+            else:
+                equity_symbols.append(symbol)
+
+        return {
+            "symbols": symbols,
+            "count": len(symbols),
+            "equity_symbols": equity_symbols,
+            "crypto_symbols": crypto_symbols,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving symbols: {e}")
+
+
+@app.get("/api/v1/data-repair/status")
+@limiter.limit("30/minute")
+def get_data_repair_status(
+    request: Request,
+    key: Optional[str] = Query(None, description="Team API key for authentication"),
+):
+    """Get current status of the data repair service.
+
+    **Authentication:** None required (public endpoint)
+
+    **Returns:**
+    ```json
+    {
+        "running": true,
+        "last_repair_time": "2025-01-15T15:45:00+00:00",
+        "root_path": "data/prices/minute_bars",
+        "symbols_tracked": 25,
+        "market_hours": true,
+        "next_repair_in_minutes": 12
+    }
+    ```
+
+    **Use Cases:**
+    - System health monitoring
+    - Data quality assurance
+    - Troubleshooting data issues
+    """
+    try:
+        from app.services.data_repair_service import data_repair_service
+        from app.services.market_hours import us_equity_market_open
+
+        status = data_repair_service.get_status()
+        market_open = us_equity_market_open()
+
+        # Calculate next repair time
+        next_repair_minutes = 15 if market_open else 60
+
+        return {
+            **status,
+            "market_hours": market_open,
+            "next_repair_in_minutes": next_repair_minutes,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error retrieving repair status: {e}"
+        )
