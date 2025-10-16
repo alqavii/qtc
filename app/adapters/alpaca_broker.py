@@ -6,8 +6,8 @@ from decimal import Decimal
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 
 @dataclass
@@ -161,6 +161,78 @@ class AlpacaBroker:
             "created_at": order.created_at,
             "filled_at": getattr(order, "filled_at", None),
         }
+
+    def getAllOrders(self, status: str = "open") -> list[dict]:
+        """Get all orders with specified status.
+        
+        Args:
+            status: Order status filter - "open", "closed", "all"
+                   - "open": pending, new, partially_filled, accepted
+                   - "closed": filled, cancelled, expired, rejected
+                   - "all": all orders
+        
+        Returns:
+            List of order dictionaries with details
+        """
+        # Map string status to QueryOrderStatus enum
+        status_map = {
+            "open": QueryOrderStatus.OPEN,
+            "closed": QueryOrderStatus.CLOSED,
+            "all": QueryOrderStatus.ALL,
+        }
+        
+        query_status = status_map.get(status.lower(), QueryOrderStatus.OPEN)
+        
+        # Create request for orders
+        request = GetOrdersRequest(status=query_status, limit=500)
+        orders = self._client.get_orders(filter=request)
+        
+        result = []
+        for order in orders:
+            result.append({
+                "id": str(order.id),
+                "client_order_id": getattr(order, "client_order_id", None),
+                "symbol": order.symbol,
+                "qty": order.qty,
+                "filled_qty": getattr(order, "filled_qty", None),
+                "side": order.side.value if hasattr(order.side, "value") else str(order.side),
+                "type": order.type.value if hasattr(order.type, "value") else str(order.type),
+                "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+                "filled_avg_price": getattr(order, "filled_avg_price", None),
+                "limit_price": getattr(order, "limit_price", None),
+                "time_in_force": order.time_in_force.value if hasattr(order.time_in_force, "value") else str(order.time_in_force),
+                "created_at": order.created_at,
+                "updated_at": getattr(order, "updated_at", None),
+                "submitted_at": getattr(order, "submitted_at", None),
+                "filled_at": getattr(order, "filled_at", None),
+                "expired_at": getattr(order, "expired_at", None),
+                "cancelled_at": getattr(order, "cancelled_at", None),
+            })
+        
+        return result
+
+    def cancelOrder(self, order_id: str) -> dict:
+        """Cancel an open order.
+        
+        Args:
+            order_id: Alpaca order ID
+            
+        Returns:
+            Dictionary with cancellation status
+        """
+        try:
+            self._client.cancel_order_by_id(order_id)
+            return {
+                "success": True,
+                "order_id": order_id,
+                "message": "Order cancelled successfully"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "error": str(e)
+            }
 
 
 def _load_env_file(path: Path) -> None:

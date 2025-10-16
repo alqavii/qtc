@@ -56,3 +56,25 @@ class PortfolioSnapshot(BaseModel):
     cash: Decimal
     positions: Dict[str, PositionView]
     market_value: Decimal
+
+
+class PendingOrder(BaseModel):
+    """
+    Represents an order that has been submitted to Alpaca but may not be filled yet.
+    Used for tracking limit orders and updating execution prices asynchronously.
+    """
+    order_id: str  # Unique identifier (usually broker_order_id)
+    team_id: str
+    symbol: str
+    side: Side
+    quantity: Decimal
+    order_type: OrderType
+    limit_price: Optional[Decimal] = None
+    status: str  # "pending_new", "new", "partially_filled", "filled", "cancelled", "rejected"
+    filled_qty: Decimal = Decimal("0")
+    filled_avg_price: Optional[Decimal] = None
+    time_in_force: TimeInForce = "day"
+    created_at: datetime
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    broker_order_id: str  # Alpaca order ID
+    requested_price: Decimal  # Original price from strategy

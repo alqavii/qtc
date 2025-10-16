@@ -416,7 +416,7 @@ def _read_portfolio_history(
 
 
 @app.get("/leaderboard")
-@limiter.limit("60/minute")
+@limiter.limit("300/minute")
 def get_leaderboard(request: Request):
     out: List[Dict[str, Any]] = []
     for tid in _list_team_ids():
@@ -538,7 +538,7 @@ async def stream_activity(request: Request):
 
 
 @app.get("/api/v1/team/{team_id}/history")
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 def get_team_history(
     request: Request,
     team_id: str,
@@ -596,7 +596,7 @@ def get_team_history(
 
 
 @app.get("/api/v1/leaderboard/history")
-@limiter.limit("10/minute")
+@limiter.limit("120/minute")
 def get_leaderboard_history(
     request: Request,
     days: Optional[int] = Query(
@@ -650,7 +650,7 @@ def get_leaderboard_history(
 
 
 @app.get("/api/v1/team/{team_id}/trades")
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 def get_team_trades(
     request: Request,
     team_id: str,
@@ -736,8 +736,254 @@ def get_team_trades(
     return {"team_id": team_id, "count": len(trades), "trades": trades}
 
 
-@app.get("/api/v1/team/{team_id}/metrics")
+@app.get("/api/v1/team/{team_id}/orders/open")
+@limiter.limit("60/minute")
+def get_team_open_orders(
+    request: Request,
+    team_id: str,
+    key: str = Query(..., description="Team API key for authentication")
+):
+    """
+    Get all open (pending) orders for a team.
+    
+    Returns limit orders and market orders that haven't filled yet.
+    Useful for monitoring pending trades and understanding why positions haven't changed.
+    
+    **Authentication:** Requires team API key
+    
+    **Parameters:**
+    - `team_id`: Team identifier
+    - `key`: Team API key for authentication
+    
+    **Returns:**
+    ```json
+    {
+        "team_id": "epsilon",
+        "open_orders_count": 2,
+        "orders": [
+            {
+                "order_id": "abc-123-alpaca",
+                "symbol": "NVDA",
+                "side": "sell",
+                "quantity": 10,
+                "order_type": "limit",
+                "limit_price": 530.00,
+                "status": "new",
+                "filled_qty": 0,
+                "filled_avg_price": null,
+                "time_in_force": "day",
+                "created_at": "2025-10-15T14:30:00Z",
+                "updated_at": "2025-10-15T14:30:00Z",
+                "requested_price": 530.00
+            }
+        ]
+    }
+    ```
+    
+    **Order Status Values:**
+    - `new` - Order accepted by broker, waiting to fill
+    - `partially_filled` - Some shares filled, rest still open
+    - `accepted` - Order received but not yet acknowledged
+    
+    **Use Cases:**
+    - Monitor pending limit orders
+    - See why sells haven't executed
+    - Track order fill progress
+    - Debug strategy behavior
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    from app.services.order_tracker import order_tracker
+    
+    # Get open orders for this team
+    orders = order_tracker.get_open_orders(team_id)
+    
+    # Convert to dict format
+    orders_list = []
+    for order in orders:
+        order_dict = {
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "quantity": float(order.quantity),
+            "order_type": order.order_type,
+            "limit_price": float(order.limit_price) if order.limit_price else None,
+            "status": order.status,
+            "filled_qty": float(order.filled_qty),
+            "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+            "time_in_force": order.time_in_force,
+            "created_at": order.created_at.isoformat(),
+            "updated_at": order.updated_at.isoformat(),
+            "requested_price": float(order.requested_price),
+            "broker_order_id": order.broker_order_id,
+        }
+        orders_list.append(order_dict)
+    
+    return {
+        "team_id": team_id,
+        "open_orders_count": len(orders_list),
+        "orders": orders_list
+    }
+
+
+@app.get("/api/v1/team/{team_id}/orders/{order_id}")
+@limiter.limit("60/minute")
+def get_team_order_details(
+    request: Request,
+    team_id: str,
+    order_id: str,
+    key: str = Query(..., description="Team API key for authentication")
+):
+    """
+    Get detailed status of a specific order.
+    
+    **Authentication:** Requires team API key
+    
+    **Parameters:**
+    - `team_id`: Team identifier
+    - `order_id`: Order ID (from broker_order_id field)
+    - `key`: Team API key for authentication
+    
+    **Returns:**
+    ```json
+    {
+        "order_id": "abc-123-alpaca",
+        "team_id": "epsilon",
+        "symbol": "NVDA",
+        "side": "sell",
+        "quantity": 10,
+        "order_type": "limit",
+        "limit_price": 530.00,
+        "status": "partially_filled",
+        "filled_qty": 5,
+        "filled_avg_price": 530.25,
+        "time_in_force": "day",
+        "created_at": "2025-10-15T14:30:00Z",
+        "updated_at": "2025-10-15T14:35:00Z"
+    }
+    ```
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    from app.services.order_tracker import order_tracker
+    
+    # Get order
+    order = order_tracker.get_order_by_id(order_id)
+    
+    if not order:
+        raise HTTPException(status_code=404, detail=f'Order {order_id} not found')
+    
+    # Verify order belongs to this team
+    if order.team_id != team_id:
+        raise HTTPException(status_code=403, detail='Order belongs to different team')
+    
+    return {
+        "order_id": order.order_id,
+        "team_id": order.team_id,
+        "symbol": order.symbol,
+        "side": order.side,
+        "quantity": float(order.quantity),
+        "order_type": order.order_type,
+        "limit_price": float(order.limit_price) if order.limit_price else None,
+        "status": order.status,
+        "filled_qty": float(order.filled_qty),
+        "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+        "time_in_force": order.time_in_force,
+        "created_at": order.created_at.isoformat(),
+        "updated_at": order.updated_at.isoformat(),
+        "requested_price": float(order.requested_price),
+        "broker_order_id": order.broker_order_id,
+    }
+
+
+@app.delete("/api/v1/team/{team_id}/orders/{order_id}")
 @limiter.limit("30/minute")
+def cancel_team_order(
+    request: Request,
+    team_id: str,
+    order_id: str,
+    key: str = Query(..., description="Team API key for authentication")
+):
+    """
+    Cancel an open order.
+    
+    **Authentication:** Requires team API key
+    
+    **Parameters:**
+    - `team_id`: Team identifier
+    - `order_id`: Order ID to cancel
+    - `key`: Team API key for authentication
+    
+    **Returns:**
+    ```json
+    {
+        "success": true,
+        "order_id": "abc-123-alpaca",
+        "message": "Order cancelled successfully",
+        "status": "cancelled"
+    }
+    ```
+    
+    **Errors:**
+    - 404: Order not found or already filled
+    - 403: Order belongs to different team
+    - 500: Alpaca cancellation failed
+    """
+    # Validate API key
+    if not auth_manager.validateTeam(team_id, key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    
+    from app.services.order_tracker import order_tracker
+    from app.adapters.alpaca_broker import load_broker_from_env
+    
+    # Get order
+    order = order_tracker.get_order_by_id(order_id)
+    
+    if not order:
+        raise HTTPException(status_code=404, detail=f'Order {order_id} not found or already closed')
+    
+    # Verify order belongs to this team
+    if order.team_id != team_id:
+        raise HTTPException(status_code=403, detail='Order belongs to different team')
+    
+    # Cancel with Alpaca
+    broker = load_broker_from_env()
+    if broker:
+        result = broker.cancelOrder(order.broker_order_id)
+        
+        if result.get("success"):
+            # Update order status
+            order.status = "cancelled"
+            order.updated_at = datetime.now(timezone.utc)
+            
+            # Remove from pending orders
+            if order_id in order_tracker.pending_orders:
+                del order_tracker.pending_orders[order_id]
+            
+            return {
+                "success": True,
+                "order_id": order_id,
+                "message": "Order cancelled successfully",
+                "status": "cancelled"
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f'Failed to cancel order: {result.get("error")}'
+            )
+    else:
+        raise HTTPException(
+            status_code=503,
+            detail='Broker not available (local-only mode)'
+        )
+
+
+@app.get("/api/v1/team/{team_id}/metrics")
+@limiter.limit("60/minute")
 def get_team_metrics(
     request: Request,
     team_id: str,
@@ -831,7 +1077,7 @@ def get_team_metrics(
 
 
 @app.get("/api/v1/leaderboard/metrics")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 def get_leaderboard_with_metrics(
     request: Request,
     days: Optional[int] = Query(

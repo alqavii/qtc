@@ -5,11 +5,13 @@ sudo systemctl restart qtc-api
 sudo systemctl status qtc-api
 
 Restart Orchestartor (used for strats to be implemented)
+sudo systemctl restart qtc-orchestrator  
+sudo journalctl -u qtc-orchestrator -n 50 --no-pager
 
 Test endpoints using curl:
 curl "https://api.qtcq.xyz/api/v1/team/admin/portfolio-history?key=va5tKBRA5Q7CFdFyeyenMO1oZmO-HN8UdhaYuvDPKBQ&days=7&limit=100"
-
 curl https://api.qtcq.xyz/leaderboard
-
+curl "https://api.qtcq.xyz/api/v1/team/admin/orders/open?key=va5tKBRA5Q7CFdFyeyenMO1oZmO-HN8UdhaYuvDPKBQ" | jq
+curl "https://api.qtcq.xyz
 Admin API KEY: 
 va5tKBRA5Q7CFdFyeyenMO1oZmO-HN8UdhaYuvDPKBQ
