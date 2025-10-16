@@ -239,26 +239,27 @@ If you just need the public leaderboard (no key required):
 curl "https://your-domain.com/leaderboard" | jq
 ```
 
-## 7. Delivering Your Strategy Repo
-1. **Repository layout**
+## 7. Uploading Your Strategy
+1. **File Structure**
    - Place your strategy class in a Python file (for example `strategy.py`) and expose it via an entry point string like `strategy:Strategy`.
    - Ensure `__init__.py` is present if you organise code into packages.
    - Include a lightweight `requirements.txt` if you depend on third-party libraries (only allow-listed packages are permitted).
-2. **Naming**
-   - Keep the repository name aligned with your team slug when possible (e.g., `team-alpha-strategy`).
-   - Match the entry point we configure in `team_registry.yaml` (`entry_point: strategy:Strategy` by default). If you change the class name or file name, tell us so we can update the entry point.
-3. **Access**
-   - Host the repo on GitHub (public or grant read access to our service account). SSH URLs are fine; HTTPS is preferred.
-   - Branch default is `main`. If you want us to pull a different branch or a tag, let us know.
-4. **Submission**
-   - Send us the repo URL, branch (or tag/SHA), and confirm the entry point string.
-   - Optional: provide a short README describing your strategy parameters so the operations team can double-check configuration.
+2. **Upload Methods**
+   - **Single File**: Upload `strategy.py` directly via `/api/v1/team/{team_id}/upload-strategy`
+   - **Multi-File**: Upload a ZIP package via `/api/v1/team/{team_id}/upload-strategy-package`
+   - **Multiple Files**: Upload individual files via `/api/v1/team/{team_id}/upload-multiple-files`
+3. **Authentication**
+   - Use your team's API key for authentication
+   - File size limits: 10MB for single files, 50MB for ZIP packages
+4. **Validation**
+   - All uploaded strategies are validated for security and syntax
+   - Failed uploads are rejected with detailed error messages
 
-## 8. How the Automation Picks Up Your Code
-- Nightly sync: every evening the orchestrator runs `sync_all_from_registry`, which shallow-clones the latest commit for each team listed in `team_registry.yaml`.
-- If the SHA has not changed since the previous sync, we skip cloning and keep the existing copy.
-- After syncing, the loader instantiates your strategy and runs a quick dry-run with dummy data to ensure `generate_signal` validates. If that fails, we quarantine the repo and notify you.
-- During trading hours, we call your class every minute; any exceptions are logged but will not stop other teams.
+## 8. How the System Loads Your Strategy
+- **Web Upload**: Strategies are uploaded directly through the web interface using API endpoints
+- **No Git Sync**: The system no longer fetches strategies from Git repositories
+- **Validation**: After upload, the loader instantiates your strategy and runs a quick dry-run with dummy data to ensure `generate_signal` validates
+- **Runtime**: During trading hours, we call your class every minute; any exceptions are logged but will not stop other teams
 
 ## 9. Data Access Best Practices
 

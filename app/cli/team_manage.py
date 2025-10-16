@@ -185,7 +185,6 @@ def add_team(
     initial_cash: Decimal = Decimal(10000),
     *,
     repo_path: str | None = None,
-    git_url: str | None = None,
     run_24_7: bool = False,
 ) -> None:
     team_id = _slugify(name)
@@ -215,8 +214,8 @@ def add_team(
         except Exception as exc:
             print(f"Warning: unable to sync local strategy for '{team_id}': {exc}")
     else:
-        entry["git_url"] = git_url or "https://github.com/org/strategy.git"
-        entry["branch"] = "main"
+        # No Git URL - strategies must be uploaded via web interface
+        print(f"Team '{team_id}' created. Upload strategy via web interface.")
     teams.append(entry)
     reg["teams"] = teams
     _save_registry(reg)
@@ -404,48 +403,7 @@ def _manual_trade(
     print(msg)
 
 
-def pullstrat(name_or_id: str) -> None:
-    """Pull/update a team's strategy repo and copy strategy.py into external_strategies."""
-    from app.loaders import git_fetch as gf
-
-    gf.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-    team_id = _slugify(name_or_id)
-    reg = _load_registry()
-    team = None
-    for item in reg.get("teams", []):
-        if item.get("team_id") == team_id:
-            team = item
-            break
-    if not team:
-        print(f"Team '{team_id}' not found in registry.")
-        return
-    url = team.get("git_url")
-    if not url:
-        print(f"Team '{team_id}' has no git_url in registry.")
-        return
-    ref = team.get("branch") or team.get("ref") or team.get("sha") or "main"
-    try:
-        sha = gf._ls_remote_head(url, ref)
-        dest = gf.CACHE_DIR / team_id
-        # Clear any legacy hashed checkout directories for this team
-        for extra in gf.CACHE_DIR.glob(f"{team_id}@*"):
-            if extra.is_dir():
-                shutil.rmtree(extra, ignore_errors=True)
-        gf.shallow_clone_at_sha(url, sha, dest)
-        # sync strategy.py into external_strategies
-        final_dir = _sync_strategy_file(team_id, dest)
-        _update_registry_repo_dir(team_id, final_dir)
-        # Remove any accidental hashed strategy folders under external_strategies
-        for extra in STRAT_ROOT.glob(f"{team_id}@*"):
-            if extra.is_dir():
-                shutil.rmtree(extra, ignore_errors=True)
-        state = gf.load_state()
-        state[team_id] = {"sha": sha, "repo_dir": str(dest)}
-        gf.save_state(state)
-        print(f"Pulled strategy for '{team_id}' -> {final_dir} (sha {sha[:12]})")
-    except Exception as e:
-        print(f"Failed to pull strategy for '{team_id}': {e}")
+# Removed pullstrat function - strategies now uploaded via web interface
 
 
 def check_status(*, show_positions: bool = False) -> None:
@@ -548,7 +506,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--git",
-        dest="git_url",
+        dest="repo_path",
         default=None,
         help="Git URL for the team's strategy (default: https://github.com/org/strategy.git)",
     )
@@ -593,16 +551,26 @@ def main() -> None:
     vt.add_argument("name", help="Team name or id")
 
     pp = sub.add_parser(
-        "pullstrat", help="Pull/update a team's strategy from the registry"
+        "pullstrat", help="DEPRECATED: Strategies now uploaded via web interface"
     )
     pp.add_argument("name", help="Team name or id")
+    pp.set_defaults(
+        func=lambda args: print(
+            "pullstrat command is deprecated. Use web interface to upload strategies."
+        )
+    )
 
     ar = sub.add_parser(
-        "addrepo", help="Set or update a team's git repo in team_registry.yaml"
+        "addrepo", help="DEPRECATED: Git repo management disabled - use web interface"
     )
     ar.add_argument("name", help="Team name or id")
     ar.add_argument("url", help="Git URL of the strategy repo")
     ar.add_argument("--branch", default="main")
+    ar.set_defaults(
+        func=lambda args: print(
+            "addrepo command is deprecated. Use web interface to upload strategies."
+        )
+    )
 
     sub.add_parser("checkdaily", help="Run daily team sanity checks")
 
@@ -623,7 +591,6 @@ def main() -> None:
         add_team(
             args.name,
             repo_path=args.repo_path,
-            git_url=args.git_url,
             initial_cash=args.initial_cash,
             run_24_7=args.run_24_7,
         )
@@ -661,32 +628,11 @@ def main() -> None:
         except Exception as e:
             print(f"Failed to read last trade: {e}")
     elif args.cmd == "pullstrat":
-        pullstrat(args.name)
+        print(
+            "pullstrat command is deprecated. Use web interface to upload strategies."
+        )
     elif args.cmd == "addrepo":
-        tid = _slugify(args.name)
-        reg = _load_registry()
-        teams = reg.setdefault("teams", [])
-        found = False
-        for t in teams:
-            if t.get("team_id") == tid:
-                t["git_url"] = args.url
-                t["branch"] = args.branch
-                t.pop("repo_dir", None)
-                found = True
-                break
-        if not found:
-            teams.append(
-                {
-                    "team_id": tid,
-                    "git_url": args.url,
-                    "branch": args.branch,
-                    "entry_point": "strategy:Strategy",
-                    "initial_cash": 10000,
-                    "run_24_7": False,
-                }
-            )
-        _save_registry(reg)
-        print(f"Updated repo for team '{tid}' -> {args.url} @ {args.branch}")
+        print("addrepo command is deprecated. Use web interface to upload strategies.")
     elif args.cmd == "addmoney":
         add_money(args.name, args.amount)
 

@@ -24,15 +24,12 @@ from app.performance.performance_tracker import performance_tracker
 from app.config.environments import EnvironmentConfig
 from app.telemetry.error_handler import error_handler_instance
 from app.telemetry.logging_config import configure_logging
-from app.loaders.git_fetch import sync_all_from_registry
+
+# Removed git_fetch import - strategies now uploaded via web interface
 from app.services.data_api import StrategyDataAPI
 from app.services.market_hours import us_equity_market_open
 from app.core.identifiers import slugify
 import shutil
-from app.cli.team_manage import (
-    pullstrat as tm_pullstrat,
-    _load_registry,
-)  # adjust path if needed
 
 
 logger = logging.getLogger(__name__)
@@ -633,15 +630,13 @@ class QTCAlphaOrchestrator:
             if not self._registry_path:
                 continue
             try:
-                logger.info("Starting daily strategy registry sync...")
-                _ = sync_all_from_registry(self._registry_path)
-                # force reload on next minute for all teams
-                self._loaded_strategies.clear()
                 logger.info(
-                    "Registry sync complete; strategies will reload on next tick"
+                    "Daily sync disabled - strategies uploaded via web interface"
                 )
+                # No longer syncing from Git repositories
+                # Strategies are uploaded directly via API endpoints
             except Exception as e:
-                logger.warning(f"Daily registry sync failed: {e}")
+                logger.warning(f"Daily sync check failed: {e}")
 
     def get_team_performance(self, team_id: str) -> Dict[str, Any]:
         """Get performance metrics for a specific team"""
@@ -855,29 +850,22 @@ def _load_teams_from_registry(
 
         repo_dir: Optional[Path] = None
 
-        if do_sync and item.get("git_url"):
-            # Use the SAME logic as CLI: call pullstrat(name) which:
-            # - resolves ref -> sha
-            # - clones into cache
-            # - copies strategy.py to external_strategies/<team_id>
-            # - updates team_registry.yaml repo_dir
-            tm_pullstrat(name)
-            # re-read registry to pick up repo_dir set by pullstrat
-            fresh = _load_registry()
-            for t in fresh.get("teams", []):
-                if (t.get("team_id") or t.get("name")) == name and t.get("repo_dir"):
-                    repo_dir = Path(t["repo_dir"])
-                    break
-            if not repo_dir:
-                print(f"Skipping team {name}: pullstrat didn't set repo_dir")
-                continue
+        # Only use repo_dir from registry - no Git fetching
+        repo_val = item.get("repo_dir")
+        if repo_val:
+            repo_dir = Path(repo_val)
         else:
-            repo_val = item.get("repo_dir")
-            if repo_val:
-                repo_dir = Path(repo_val)
+            # Check if strategy exists in external_strategies from web upload
+            web_strategy_path = STRATEGY_ROOT / name
+            if (
+                web_strategy_path.exists()
+                and (web_strategy_path / "strategy.py").exists()
+            ):
+                repo_dir = web_strategy_path
+                print(f"Using web-uploaded strategy for team {name}")
             else:
                 print(
-                    f"Skipping team {name}: no repo_dir; run 'team_manage pullstrat {name}'"
+                    f"Skipping team {name}: no strategy found. Upload via web interface."
                 )
                 continue
 

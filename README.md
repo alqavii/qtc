@@ -86,7 +86,7 @@ app/
     environments.py          # Env config + data/cache paths
     settings.py              # Global universe, timezones
   loaders/
-    git_fetch.py             # Sync strategies from team_registry.yaml (shallow clone)
+    # git_fetch.py removed - strategies now uploaded via web interface
     strategy_loader.py       # Dynamic import + I/O smoke test + schema check
   models/
     teams.py                 # Team, Portfolio, Position models
@@ -179,13 +179,12 @@ python -m app.main --registry team_registry.yaml --sync-registry
 ```yaml
 teams:
   - team_id: team-alpha
-    git_url: https://github.com/org/team-alpha-strategy.git
-    branch: main
+    repo_dir: /opt/qtc/external_strategies/team-alpha
     entry_point: strategy:MyStrategy
     initial_cash: 10000
 ```
 - On startup, each team gets an API key in `data/api_keys.json` (existing keys are preserved).
-- Strategies are shallow-cloned into `external_strategies/�` and loaded dynamically.
+- Strategies are uploaded via web interface and stored in `external_strategies/` and loaded dynamically.
 
 B) From local folders (no Git)
 ```bash
