@@ -4,6 +4,48 @@
 
 ---
 
+## 🚀 For Traders
+
+**New to QTC Alpha?** This section covers everything you need to know as a trader using the system.
+
+### Quick Start
+1. **Get your team credentials** - You'll receive a team slug (e.g., `team-alpha`) and API key
+2. **Monitor your strategy** - Use the API endpoints to track performance and trades
+3. **Access market data** - Historical and real-time data is available via REST API
+4. **Check the leaderboard** - See how you rank against other teams
+
+### Essential Endpoints
+```bash
+# Check your team status (replace team-alpha with your team slug)
+curl "https://your-domain.com/api/v1/team/team-alpha?key=YOUR_KEY"
+
+# View recent trades
+curl "https://your-domain.com/api/v1/team/team-alpha/trades?key=YOUR_KEY&limit=50"
+
+# Get portfolio history
+curl "https://your-domain.com/api/v1/team/team-alpha/history?key=YOUR_KEY&days=7"
+
+# Public leaderboard (no key needed)
+curl "https://your-domain.com/leaderboard"
+```
+
+### Market Data Access
+```bash
+# Get recent price data
+curl "https://your-domain.com/api/v1/market-data/AAPL/recent/100"
+
+# Get data for a specific day
+curl "https://your-domain.com/api/v1/market-data/AAPL/day/2025-01-15"
+
+# Get data for a time range
+curl "https://your-domain.com/api/v1/market-data/AAPL/range?start=2025-01-15T09:30:00Z&end=2025-01-15T16:00:00Z"
+```
+
+### 📖 Complete Trader Guide
+For detailed information on strategy development, data access patterns, order construction, and system architecture, see the **[TRADER_HANDBOOK.md](TRADER_HANDBOOK.md)**.
+
+---
+
 ## 📚 Documentation
 
 **New to QTC Alpha?** Start here:
