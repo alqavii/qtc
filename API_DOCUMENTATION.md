@@ -1,7 +1,7 @@
 # QTC Alpha API Documentation
 
 **Version:** Beta
-**Last Updated:** October 15, 2025
+**Last Updated:** January 16, 2025
 
 ---
 
@@ -29,9 +29,12 @@ The QTC Alpha API provides both public and authenticated endpoints for accessing
 - **Historical portfolio performance** for visualizations
 - **Team-specific metrics and trade history**
 - **Server-Sent Events (SSE)** for live activity streams
-- **Strategy file uploads** (single file, ZIP packages, or multiple files) ⭐ NEW
-- **Error tracking and debugging** (timeouts, exceptions, validation failures) ⭐ NEW
-- **Detailed position history** (per-symbol tracking and aggregate summaries) ⭐ NEW
+- **Strategy file uploads** (single file, ZIP packages, or multiple files)
+- **Error tracking and debugging** (timeouts, exceptions, validation failures)
+- **Detailed position history** (per-symbol tracking and aggregate summaries)
+- **Order management** (open orders, order details, cancellation)
+- **System health monitoring** (market status, orchestrator health)
+- **Execution health tracking** (strategy performance, timeout monitoring)
 
 **API Features:**
 - RESTful JSON API
@@ -40,6 +43,8 @@ The QTC Alpha API provides both public and authenticated endpoints for accessing
 - File upload support for strategy deployment
 - Strategy error logging and monitoring
 - Comprehensive position tracking
+- Order management and cancellation
+- System health and status monitoring
 - Rate-limited to prevent abuse
 
 ---

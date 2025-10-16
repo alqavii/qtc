@@ -51,7 +51,22 @@ Quick start guide:
 
 ## 🎯 Specialized Documentation
 
-### Strategy Upload (NEW!)
+### New Features & Enhancements
+
+**[NEW_FEATURES_GUIDE.md](NEW_FEATURES_GUIDE.md)** ⭐ **LATEST**
+Comprehensive guide to all new features:
+- Strategy upload system with enhanced security
+- Order management and cancellation
+- Error tracking and debugging tools
+- Execution health monitoring
+- Detailed position tracking
+- System status monitoring
+- Complete API reference for new endpoints
+
+**Read time:** 25 minutes  
+**Audience:** All users, developers, traders
+
+### Strategy Upload
 
 **[STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md)** ⭐
 Complete guide for uploading strategies via API:
@@ -104,7 +119,10 @@ Technical implementation details:
 → Read [strategy_starter/README.md](strategy_starter/README.md)
 
 #### "How do I upload my strategy?"
-→ Read [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md) ⭐ NEW
+→ Read [STRATEGY_UPLOAD_API.md](STRATEGY_UPLOAD_API.md) ⭐
+
+#### "What new features are available?"
+→ Read [NEW_FEATURES_GUIDE.md](NEW_FEATURES_GUIDE.md) ⭐ **LATEST**
 
 #### "What are the rate limits?"
 → See [SYSTEM_DOCUMENTATION.md - FAQ](SYSTEM_DOCUMENTATION.md#faq---frequently-asked-questions)
@@ -147,12 +165,14 @@ Technical implementation details:
 | File | Status | Last Updated |
 |------|--------|--------------|
 | SYSTEM_DOCUMENTATION.md | ✅ Complete | Oct 10, 2025 |
-| API_DOCUMENTATION.md | ✅ Complete | Oct 10, 2025 |
-| README.md | ✅ Complete | Oct 10, 2025 |
+| API_DOCUMENTATION.md | ✅ Complete | **Jan 16, 2025** |
+| README.md | ✅ Complete | **Jan 16, 2025** |
 | strategy_starter/README.md | ✅ Complete | Oct 10, 2025 |
 | **STRATEGY_UPLOAD_API.md** | ✅ Complete | **Oct 13, 2025** |
 | **IMPLEMENTATION_SUMMARY.md** | ✅ Complete | **Oct 13, 2025** |
-| DOCUMENTATION_INDEX.md | ✅ Complete | Oct 13, 2025 |
+| DOCUMENTATION_INDEX.md | ✅ Complete | **Jan 16, 2025** |
+| **TRADER_HANDBOOK.md** | ✅ Complete | **Jan 16, 2025** |
+| **NEW_FEATURES_GUIDE.md** | ✅ Complete | **Jan 16, 2025** |
 
 ---
 
@@ -209,12 +229,23 @@ New to QTC Alpha? Follow this path:
 
 ---
 
-**Last Updated:** October 13, 2025  
+**Last Updated:** January 16, 2025  
 **Maintained by:** QTC Alpha Team
 
 ---
 
 ## ⭐ Latest Updates
+
+### January 16, 2025 - Enhanced Trading Platform
+- ✅ **Strategy Upload System** - Complete web-based strategy deployment
+- ✅ **Enhanced Security Validation** - Comprehensive import blacklisting and syntax checking
+- ✅ **Order Management** - Track open orders, view details, cancel pending orders
+- ✅ **Error Tracking & Debugging** - Monitor strategy execution errors and timeouts
+- ✅ **Execution Health Monitoring** - Track strategy performance and timeout risks
+- ✅ **Detailed Position Tracking** - Symbol-specific position history and aggregate statistics
+- ✅ **System Status Monitoring** - Real-time system health and market status
+- ✅ **Enhanced API Documentation** - Complete endpoint reference with examples
+- 📄 See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete details
 
 ### October 13, 2025 - Strategy Upload Feature
 - ✅ Added file upload API endpoints

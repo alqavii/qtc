@@ -226,34 +226,78 @@ curl "https://your-domain.com/api/v1/team/team-alpha?key=YOUR_KEY" | jq
 # Portfolio history for the last 7 days
 curl "https://your-domain.com/api/v1/team/team-alpha/history?key=YOUR_KEY&days=7" | jq
 
+# Detailed portfolio history with positions
+curl "https://your-domain.com/api/v1/team/team-alpha/portfolio-history?key=YOUR_KEY&days=7" | jq
+
 # Recent trades
 curl "https://your-domain.com/api/v1/team/team-alpha/trades?key=YOUR_KEY&limit=50" | jq
 
 # Open orders
 curl "https://your-domain.com/api/v1/team/team-alpha/orders/open?key=YOUR_KEY" | jq
+
+# Strategy execution health
+curl "https://your-domain.com/api/v1/team/team-alpha/execution-health?key=YOUR_KEY" | jq
+
+# Strategy execution errors
+curl "https://your-domain.com/api/v1/team/team-alpha/errors?key=YOUR_KEY&limit=20" | jq
+
+# Position history for specific symbol
+curl "https://your-domain.com/api/v1/team/team-alpha/position/AAPL/history?key=YOUR_KEY&days=7" | jq
+
+# Position summary statistics
+curl "https://your-domain.com/api/v1/team/team-alpha/positions/summary?key=YOUR_KEY&days=30" | jq
 ```
 
 If you just need the public leaderboard (no key required):
 
 ```bash
 curl "https://your-domain.com/leaderboard" | jq
+
+# System status (no key required)
+curl "https://your-domain.com/api/v1/status" | jq
 ```
 
 ## 7. Uploading Your Strategy
-1. **File Structure**
-   - Place your strategy class in a Python file (for example `strategy.py`) and expose it via an entry point string like `strategy:Strategy`.
-   - Ensure `__init__.py` is present if you organise code into packages.
-   - Include a lightweight `requirements.txt` if you depend on third-party libraries (only allow-listed packages are permitted).
-2. **Upload Methods**
-   - **Single File**: Upload `strategy.py` directly via `/api/v1/team/{team_id}/upload-strategy`
-   - **Multi-File**: Upload a ZIP package via `/api/v1/team/{team_id}/upload-strategy-package`
-   - **Multiple Files**: Upload individual files via `/api/v1/team/{team_id}/upload-multiple-files`
-3. **Authentication**
-   - Use your team's API key for authentication
-   - File size limits: 10MB for single files, 50MB for ZIP packages
-4. **Validation**
-   - All uploaded strategies are validated for security and syntax
-   - Failed uploads are rejected with detailed error messages
+
+### 7.1 Upload Methods
+
+**Single File Upload:**
+```bash
+curl -X POST "https://your-domain.com/api/v1/team/team-alpha/upload-strategy" \
+  -F "key=YOUR_API_KEY" \
+  -F "strategy_file=@strategy.py"
+```
+
+**ZIP Package Upload:**
+```bash
+curl -X POST "https://your-domain.com/api/v1/team/team-alpha/upload-strategy-package" \
+  -F "key=YOUR_API_KEY" \
+  -F "strategy_zip=@strategy_package.zip"
+```
+
+**Multiple Files Upload:**
+```bash
+curl -X POST "https://your-domain.com/api/v1/team/team-alpha/upload-multiple-files" \
+  -F "key=YOUR_API_KEY" \
+  -F "files=@strategy.py" \
+  -F "files=@indicators.py" \
+  -F "files=@risk_manager.py"
+```
+
+### 7.2 File Structure
+- Place your strategy class in a Python file (for example `strategy.py`) and expose it via an entry point string like `strategy:Strategy`.
+- Ensure `__init__.py` is present if you organise code into packages.
+- Include a lightweight `requirements.txt` if you depend on third-party libraries (only allow-listed packages are permitted).
+
+### 7.3 Authentication
+- Use your team's API key for authentication
+- File size limits: 10MB for single files, 50MB for ZIP packages, 100MB total extracted
+
+### 7.4 Validation
+- All uploaded strategies are validated for security and syntax
+- **Enhanced security validation**: 65+ dangerous modules blocked
+- **Comprehensive validation**: Syntax checking, import blacklisting, dangerous builtin blocking
+- Failed uploads are rejected with detailed error messages
 
 ## 8. How the System Loads Your Strategy
 - **Web Upload**: Strategies are uploaded directly through the web interface using API endpoints

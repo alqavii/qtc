@@ -10,23 +10,39 @@
 
 ### Quick Start
 1. **Get your team credentials** - You'll receive a team slug (e.g., `team-alpha`) and API key
-2. **Monitor your strategy** - Use the API endpoints to track performance and trades
-3. **Access market data** - Historical and real-time data is available via REST API
-4. **Check the leaderboard** - See how you rank against other teams
+2. **Upload your strategy** - Use the web interface to upload your trading strategy files
+3. **Monitor your strategy** - Use the API endpoints to track performance, trades, and execution health
+4. **Access market data** - Historical and real-time data is available via REST API
+5. **Check the leaderboard** - See how you rank against other teams
+6. **Debug issues** - Use error tracking and execution health endpoints to troubleshoot problems
 
 ### Essential Endpoints
 ```bash
 # Check your team status (replace team-alpha with your team slug)
 curl "https://your-domain.com/api/v1/team/team-alpha?key=YOUR_KEY"
 
+# Upload your strategy (single file)
+curl -X POST "https://your-domain.com/api/v1/team/team-alpha/upload-strategy" \
+  -F "key=YOUR_KEY" \
+  -F "strategy_file=@strategy.py"
+
+# Check execution health and performance
+curl "https://your-domain.com/api/v1/team/team-alpha/execution-health?key=YOUR_KEY"
+
 # View recent trades
 curl "https://your-domain.com/api/v1/team/team-alpha/trades?key=YOUR_KEY&limit=50"
 
-# Get portfolio history
-curl "https://your-domain.com/api/v1/team/team-alpha/history?key=YOUR_KEY&days=7"
+# Get portfolio history with detailed positions
+curl "https://your-domain.com/api/v1/team/team-alpha/portfolio-history?key=YOUR_KEY&days=7"
+
+# Check for strategy errors
+curl "https://your-domain.com/api/v1/team/team-alpha/errors?key=YOUR_KEY&limit=20"
 
 # Public leaderboard (no key needed)
 curl "https://your-domain.com/leaderboard"
+
+# System status (no key needed)
+curl "https://your-domain.com/api/v1/status"
 ```
 
 ### Market Data Access
@@ -60,10 +76,17 @@ For detailed information on strategy development, data access patterns, order co
 ## 1) What You Get
 
 - Minute-aligned orchestrator with daily backfill (previous day)
+- **Strategy upload system** - Upload strategies via web interface (single file, ZIP, or multiple files)
+- **Enhanced security validation** - Comprehensive import blacklisting and syntax checking
 - Strategy plugin system (per-team), restricted imports, 5s timeout, validated outputs only
+- **Order management** - Track open orders, view order details, cancel pending orders
 - Trade execution via Alpaca using client order IDs that embed the team ID
+- **Error tracking and debugging** - Monitor strategy execution errors and timeouts
+- **Execution health monitoring** - Track strategy performance and timeout risks
 - Per-team data lake: trades, per-minute portfolio snapshots (JSONL), daily folded Parquet, per-minute metrics
+- **Detailed position tracking** - Symbol-specific position history and aggregate statistics
 - Account-level snapshots from Alpaca each minute (JSONL + folded Parquet) with session metrics
+- **System status monitoring** - Real-time system health and market status
 - Read-only API for teams and public leaderboard
 - Team API keys auto-generated on startup (if missing)
 - Mock data included for quick testing
@@ -88,6 +111,7 @@ app/
   loaders/
     # git_fetch.py removed - strategies now uploaded via web interface
     strategy_loader.py       # Dynamic import + I/O smoke test + schema check
+    static_check.py         # Security validation (import blacklisting, syntax checking)
   models/
     teams.py                 # Team, Portfolio, Position models
     ticker_data.py           # MinuteBar etc.
@@ -193,6 +217,12 @@ python -m app.main \
   --teams "Team Two;./strategy_starter;strategy:MyStrategy;150000"
 ```
 
+**Strategy Upload Methods:**
+- **Web Interface**: Upload strategies via API endpoints (recommended)
+- **Single File**: Upload `strategy.py` directly
+- **ZIP Package**: Upload multiple files as a ZIP archive
+- **Multiple Files**: Upload individual files separately
+
 Other CLI flags:
 - `--duration N`           run for N minutes then stop (graceful)
 - `--print-team <team_id>` print latest snapshot/metrics (reads ./data; no run needed)
@@ -237,10 +267,12 @@ api.getRangeMulti(["AAPL","MSFT"], start_dt, end_dt)
 
 Safety model:
 - Only returns are accepted (no side effects)
-- Import blacklist: 65 dangerous modules blocked (os, subprocess, requests, socket, pickle, sys, etc.) - all others allowed
+- **Enhanced security validation**: 65+ dangerous modules blocked (os, subprocess, requests, socket, pickle, sys, etc.) - all others allowed
+- **Comprehensive validation**: Syntax checking, import blacklisting, dangerous builtin blocking
 - Blocked builtins: `open`, `exec`, `eval`, `__import__`
-- File size limits: 10 MB per file, 50 MB for ZIP uploads
+- File size limits: 10 MB per file, 50 MB for ZIP uploads, 100 MB total extracted
 - Each call runs in a thread with 5s timeout; errors are logged and isolated by team
+- **Error tracking**: Monitor strategy execution errors, timeouts, and validation failures
 - Rate limited: 2-3 uploads per minute per IP
 
 ---
@@ -287,20 +319,26 @@ Start the API server:
 uvicorn app.api.server:app --host 0.0.0.0 --port 8000
 ```
 
-Endpoints:
-- `GET /api/v1/leaderboard` (public)
-  - `{ leaderboard: [{ team_id, portfolio_value }] }` sorted desc
-- `GET /api/v1/team/{team_id}?key=TEAM_KEY` (per-team auth)
-  - `{ team_id, snapshot, metrics }`
-- `GET /api/v1/team/{team_id}/line?key=TEAM_KEY` (per-team auth)
-  - Plain-text one-liner for CLI display
+**Key Endpoints:**
+- `GET /api/v1/status` (public) - System health and market status
+- `GET /leaderboard` (public) - Current rankings
+- `GET /api/v1/team/{team_id}?key=TEAM_KEY` (per-team auth) - Team status and metrics
+- `GET /api/v1/team/{team_id}/execution-health?key=TEAM_KEY` (per-team auth) - Strategy execution health
+- `GET /api/v1/team/{team_id}/errors?key=TEAM_KEY` (per-team auth) - Strategy execution errors
+- `GET /api/v1/team/{team_id}/portfolio-history?key=TEAM_KEY` (per-team auth) - Detailed portfolio snapshots
+- `GET /api/v1/team/{team_id}/position/{symbol}/history?key=TEAM_KEY` (per-team auth) - Symbol position tracking
+- `GET /api/v1/team/{team_id}/orders/open?key=TEAM_KEY` (per-team auth) - Open orders
+- `DELETE /api/v1/team/{team_id}/orders/{order_id}?key=TEAM_KEY` (per-team auth) - Cancel order
+- `POST /api/v1/team/{team_id}/upload-strategy` (per-team auth) - Upload single strategy file
+- `POST /api/v1/team/{team_id}/upload-strategy-package` (per-team auth) - Upload ZIP package
+- `POST /api/v1/team/{team_id}/upload-multiple-files` (per-team auth) - Upload multiple files
 
 Team keys:
 - Stored in `data/api_keys.json`
 - Auto-generated at orchestrator startup for newly created teams; existing keys are preserved
 
 CORS/HTTPS:
-- Public leaderboard is keyless
+- Public leaderboard and system status are keyless
 - For browser apps on another domain, add a reverse proxy (e.g., Nginx) or CORS headers
 
 ---
