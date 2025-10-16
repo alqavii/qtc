@@ -158,9 +158,10 @@ GET /api/v1/data-repair/status
 - Data is stored in partitioned parquet files (one file per day)
 
 **Data Sources:**
-- **Equity symbols**: Alpaca Markets (NYSE/NASDAQ)
+- **Equity symbols**: Alpaca Markets via IEX feed (NYSE/NASDAQ)
 - **Crypto symbols**: Alpaca Crypto (BTC, ETH, etc.)
 - **Trading hours**: US equity market hours for stocks, 24/7 for crypto
+- **Data Feed**: IEX (Investors Exchange) - ensures consistent pricing from single exchange
 
 **Data Format:**
 - All timestamps are in UTC
