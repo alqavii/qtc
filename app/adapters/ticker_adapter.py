@@ -70,7 +70,7 @@ class TickerAdapter:
         out: list[MinuteBar] = []
 
         if eq:
-            req = StockLatestBarRequest(symbol_or_symbols=eq)
+            req = StockLatestBarRequest(symbol_or_symbols=eq, feed="iex")
             bars = client.get_stock_latest_bar(req)
             for ticker, bar in bars.items():
                 if bar is None:
