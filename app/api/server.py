@@ -106,12 +106,39 @@ def _calculate_performance_metrics(
         import numpy as np
         from datetime import datetime
 
-        # Extract values and timestamps
-        values = np.array([float(h["value"]) for h in history])
-        timestamps = [
-            datetime.fromisoformat(h["timestamp"].replace("Z", "+00:00"))
-            for h in history
-        ]
+        # Extract values and timestamps, filtering out invalid entries
+        valid_history = []
+        for h in history:
+            try:
+                # Validate timestamp
+                ts_str = h.get("timestamp", "")
+                if not ts_str or ts_str == "NaT" or "NaT" in str(ts_str):
+                    continue
+
+                # Validate value
+                value = h.get("value")
+                if value is None:
+                    continue
+
+                # Parse timestamp to ensure it's valid
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+                # Add to valid history
+                valid_history.append({"timestamp": ts, "value": float(value)})
+            except (ValueError, TypeError, AttributeError):
+                # Skip invalid entries
+                continue
+
+        if len(valid_history) < 2:
+            return {
+                "error": "Insufficient valid data for metrics calculation",
+                "data_points": len(history),
+                "valid_data_points": len(valid_history),
+            }
+
+        # Extract values and timestamps from validated data
+        values = np.array([h["value"] for h in valid_history])
+        timestamps = [h["timestamp"] for h in valid_history]
 
         # Handle edge case: all zero values
         if np.all(values == 0):
@@ -2309,6 +2336,228 @@ def get_team_symbol_position_history(
     }
 
 
+@app.get("/api/v1/market/bars")
+@limiter.limit("60/minute")
+def get_market_historical_bars(
+    request: Request,
+    symbols: str = Query(
+        ...,
+        description="Symbol or comma-separated symbols (e.g., 'AAPL' or 'AAPL,SPY,NVDA')",
+    ),
+    start: str = Query(
+        ..., description="Start datetime (ISO 8601: 2025-10-01T09:30:00)"
+    ),
+    end: str = Query(..., description="End datetime (ISO 8601: 2025-10-10T16:00:00)"),
+    key: str = Query(..., description="Team API key for authentication"),
+):
+    """Get historical minute bar data (OHLCV) for one or more symbols.
+
+    This endpoint provides access to stored historical market data from the Parquet database.
+    Supports both single symbol and multi-symbol queries in one unified interface.
+
+    **Authentication:** Requires team API key
+
+    **Parameters:**
+    - `symbols`: Single symbol or comma-separated list (max 20 symbols)
+    - `start`: Start datetime in ISO 8601 format
+    - `end`: End datetime in ISO 8601 format
+    - `key`: Team API key
+
+    **Single Symbol Example:**
+    ```
+    GET /api/v1/market/bars?symbols=AAPL&start=2025-10-01T09:30:00&end=2025-10-02T16:00:00&key=YOUR_KEY
+    ```
+
+    **Multi-Symbol Example:**
+    ```
+    GET /api/v1/market/bars?symbols=AAPL,SPY,NVDA&start=2025-10-15T09:30:00&end=2025-10-16T16:00:00&key=YOUR_KEY
+    ```
+
+    **Single Symbol Response:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "start": "2025-10-01T09:30:00+00:00",
+        "end": "2025-10-10T16:00:00+00:00",
+        "bar_count": 2340,
+        "bars": [
+            {
+                "timestamp": "2025-10-01T09:30:00+00:00",
+                "open": 225.50,
+                "high": 226.00,
+                "low": 225.30,
+                "close": 225.80,
+                "volume": 1250000
+            }
+        ]
+    }
+    ```
+
+    **Multi-Symbol Response:**
+    ```json
+    {
+        "start": "2025-10-01T09:30:00+00:00",
+        "end": "2025-10-10T16:00:00+00:00",
+        "symbols": ["AAPL", "SPY", "NVDA"],
+        "data": {
+            "AAPL": {"bar_count": 2340, "bars": [...]},
+            "SPY": {"bar_count": 2340, "bars": [...]},
+            "NVDA": {"bar_count": 2340, "bars": [...]}
+        }
+    }
+    ```
+
+    **Use Cases:**
+    - Strategy backtesting
+    - Price charts and visualizations
+    - Technical analysis
+    - Multi-asset correlation studies
+    """
+    from datetime import datetime
+    from app.services.data_api import StrategyDataAPI
+
+    # Validate API key
+    team_id = auth_manager.findTeamByKey(key)
+    if not team_id:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Parse symbols
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(status_code=400, detail="No symbols provided")
+
+    if len(symbol_list) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 symbols per request")
+
+    # Parse datetimes
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid datetime format. Use ISO 8601: YYYY-MM-DDTHH:MM:SS",
+        )
+
+    # Validate date range
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=400, detail="end must be after start")
+
+    if (end_dt - start_dt).days > 30:
+        raise HTTPException(
+            status_code=400, detail="Maximum range is 30 days per request"
+        )
+
+    # Validate symbols are in universe
+    from app.config.settings import TICKER_UNIVERSE
+
+    invalid_symbols = [s for s in symbol_list if s not in TICKER_UNIVERSE]
+    if invalid_symbols:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Symbols not in ticker universe: {', '.join(invalid_symbols)}",
+        )
+
+    # Fetch data
+    api = StrategyDataAPI()
+
+    try:
+        # Handle single vs multiple symbols
+        if len(symbol_list) == 1:
+            # Single symbol - return simple format
+            symbol = symbol_list[0]
+            df = api.getRange(symbol, start_dt, end_dt)
+
+            if df.empty:
+                return {
+                    "symbol": symbol,
+                    "start": start_dt.isoformat(),
+                    "end": end_dt.isoformat(),
+                    "bar_count": 0,
+                    "bars": [],
+                    "message": "No data available for this time range",
+                }
+
+            # Limit to 10,000 bars
+            if len(df) > 10000:
+                step = max(1, len(df) // 10000)
+                df = df.iloc[::step].head(10000)
+
+            # Convert to response format
+            bars = []
+            for _, row in df.iterrows():
+                bar_data = {
+                    "timestamp": row["timestamp"].isoformat()
+                    if hasattr(row["timestamp"], "isoformat")
+                    else str(row["timestamp"]),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                }
+                if "volume" in row and row["volume"] is not None:
+                    bar_data["volume"] = int(row["volume"])
+                bars.append(bar_data)
+
+            return {
+                "symbol": symbol,
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
+                "bar_count": len(bars),
+                "bars": bars,
+            }
+
+        else:
+            # Multiple symbols - return dict format
+            dfs = api.getRange(symbol_list, start_dt, end_dt)
+
+            result = {
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
+                "symbols": symbol_list,
+                "data": {},
+            }
+
+            for symbol in symbol_list:
+                df = dfs.get(symbol)
+
+                if df is None or df.empty:
+                    result["data"][symbol] = {"bar_count": 0, "bars": []}
+                    continue
+
+                # Limit bars per symbol
+                if len(df) > 10000:
+                    step = max(1, len(df) // 10000)
+                    df = df.iloc[::step].head(10000)
+
+                bars = []
+                for _, row in df.iterrows():
+                    bar_data = {
+                        "timestamp": row["timestamp"].isoformat()
+                        if hasattr(row["timestamp"], "isoformat")
+                        else str(row["timestamp"]),
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                    }
+                    if "volume" in row and row["volume"] is not None:
+                        bar_data["volume"] = int(row["volume"])
+                    bars.append(bar_data)
+
+                result["data"][symbol] = {"bar_count": len(bars), "bars": bars}
+
+            return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching data: {str(e)}")
+
+
 @app.get("/api/v1/team/{team_id}/positions/summary")
 @limiter.limit("30/minute")
 def get_team_positions_summary(
@@ -2431,357 +2680,3 @@ def get_team_positions_summary(
         "current_positions": current_position_count,
         "symbols": symbols_summary,
     }
-
-
-# Market Data API Endpoints
-
-
-@app.get("/api/v1/market-data/{symbol}/range")
-@limiter.limit("60/minute")
-def get_market_data_range(
-    request: Request,
-    symbol: str,
-    start: str = Query(..., description="Start datetime (ISO 8601 UTC)"),
-    end: str = Query(..., description="End datetime (ISO 8601 UTC)"),
-    key: Optional[str] = Query(None, description="Team API key for authentication"),
-):
-    """Get historical market data for a symbol within a time range.
-
-    **Authentication:** Optional (public endpoint, but authenticated users get higher rate limits)
-
-    **Parameters:**
-    - `symbol`: Stock symbol (e.g., AAPL, NVDA, SPY)
-    - `start`: Start datetime in ISO 8601 format (e.g., "2025-01-15T09:30:00Z")
-    - `end`: End datetime in ISO 8601 format (e.g., "2025-01-15T16:00:00Z")
-    - `key`: Optional team API key for higher rate limits
-
-    **Returns:**
-    ```json
-    {
-        "symbol": "AAPL",
-        "start": "2025-01-15T09:30:00+00:00",
-        "end": "2025-01-15T16:00:00+00:00",
-        "data_points": 390,
-        "data": [
-            {
-                "timestamp": "2025-01-15T09:30:00+00:00",
-                "open": 150.25,
-                "high": 150.50,
-                "low": 150.20,
-                "close": 150.45,
-                "volume": 1000000,
-                "trade_count": 5000,
-                "vwap": 150.35
-            }
-        ]
-    }
-    ```
-
-    **Use Cases:**
-    - Historical price analysis
-    - Backtesting strategies
-    - Technical indicator calculations
-    - Chart data for visualization
-    """
-    try:
-        # Parse datetime parameters
-        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-
-        # Validate time range (max 30 days)
-        if (end_dt - start_dt).days > 30:
-            raise HTTPException(
-                status_code=400, detail="Time range cannot exceed 30 days"
-            )
-
-        # Get data using StrategyDataAPI
-        from app.services.data_api import StrategyDataAPI
-
-        api = StrategyDataAPI()
-        df = api.getRange(symbol.upper(), start_dt, end_dt)
-
-        if df.empty:
-            return {
-                "symbol": symbol.upper(),
-                "start": start,
-                "end": end,
-                "data_points": 0,
-                "data": [],
-                "message": "No data found for the specified time range",
-            }
-
-        # Convert DataFrame to list of records
-        data = df.to_dict("records")
-
-        return {
-            "symbol": symbol.upper(),
-            "start": start,
-            "end": end,
-            "data_points": len(data),
-            "data": data,
-        }
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {e}")
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error retrieving market data: {e}"
-        )
-
-
-@app.get("/api/v1/market-data/{symbol}/day/{date}")
-@limiter.limit("60/minute")
-def get_market_data_day(
-    request: Request,
-    symbol: str,
-    date: str = Query(..., description="Date in YYYY-MM-DD format"),
-    key: Optional[str] = Query(None, description="Team API key for authentication"),
-):
-    """Get market data for a symbol for a specific trading day.
-
-    **Authentication:** Optional (public endpoint)
-
-    **Parameters:**
-    - `symbol`: Stock symbol (e.g., AAPL, NVDA, SPY)
-    - `date`: Date in YYYY-MM-DD format (e.g., "2025-01-15")
-    - `key`: Optional team API key for higher rate limits
-
-    **Returns:**
-    ```json
-    {
-        "symbol": "AAPL",
-        "date": "2025-01-15",
-        "data_points": 390,
-        "data": [
-            {
-                "timestamp": "2025-01-15T09:30:00+00:00",
-                "open": 150.25,
-                "high": 150.50,
-                "low": 150.20,
-                "close": 150.45,
-                "volume": 1000000,
-                "trade_count": 5000,
-                "vwap": 150.35
-            }
-        ]
-    }
-    ```
-
-    **Use Cases:**
-    - Daily price analysis
-    - Intraday trading patterns
-    - Daily performance metrics
-    """
-    try:
-        # Parse date parameter
-        from datetime import date as date_type
-
-        target_date = date_type.fromisoformat(date)
-
-        # Get data using StrategyDataAPI
-        from app.services.data_api import StrategyDataAPI
-
-        api = StrategyDataAPI()
-        df = api.getDay(symbol.upper(), target_date)
-
-        if df.empty:
-            return {
-                "symbol": symbol.upper(),
-                "date": date,
-                "data_points": 0,
-                "data": [],
-                "message": "No data found for the specified date",
-            }
-
-        # Convert DataFrame to list of records
-        data = df.to_dict("records")
-
-        return {
-            "symbol": symbol.upper(),
-            "date": date,
-            "data_points": len(data),
-            "data": data,
-        }
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error retrieving market data: {e}"
-        )
-
-
-@app.get("/api/v1/market-data/{symbol}/recent/{count}")
-@limiter.limit("60/minute")
-def get_market_data_recent(
-    request: Request,
-    symbol: str,
-    count: int = Query(
-        ..., description="Number of recent bars to retrieve", ge=1, le=1000
-    ),
-    key: Optional[str] = Query(None, description="Team API key for authentication"),
-):
-    """Get the most recent market data bars for a symbol.
-
-    **Authentication:** Optional (public endpoint)
-
-    **Parameters:**
-    - `symbol`: Stock symbol (e.g., AAPL, NVDA, SPY)
-    - `count`: Number of recent bars to retrieve (1-1000)
-    - `key`: Optional team API key for higher rate limits
-
-    **Returns:**
-    ```json
-    {
-        "symbol": "AAPL",
-        "count": 100,
-        "data_points": 100,
-        "data": [
-            {
-                "timestamp": "2025-01-15T15:59:00+00:00",
-                "open": 150.25,
-                "high": 150.50,
-                "low": 150.20,
-                "close": 150.45,
-                "volume": 1000000,
-                "trade_count": 5000,
-                "vwap": 150.35
-            }
-        ]
-    }
-    ```
-
-    **Use Cases:**
-    - Real-time price monitoring
-    - Recent trend analysis
-    - Live strategy inputs
-    """
-    try:
-        # Get data using StrategyDataAPI
-        from app.services.data_api import StrategyDataAPI
-
-        api = StrategyDataAPI()
-        df = api.getLastN(symbol.upper(), count)
-
-        if df.empty:
-            return {
-                "symbol": symbol.upper(),
-                "count": count,
-                "data_points": 0,
-                "data": [],
-                "message": "No recent data found",
-            }
-
-        # Convert DataFrame to list of records
-        data = df.to_dict("records")
-
-        return {
-            "symbol": symbol.upper(),
-            "count": count,
-            "data_points": len(data),
-            "data": data,
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error retrieving market data: {e}"
-        )
-
-
-@app.get("/api/v1/market-data/symbols")
-@limiter.limit("120/minute")
-def get_available_symbols(
-    request: Request,
-    key: Optional[str] = Query(None, description="Team API key for authentication"),
-):
-    """Get list of all available trading symbols.
-
-    **Authentication:** None required (public endpoint)
-
-    **Returns:**
-    ```json
-    {
-        "symbols": ["AAPL", "NVDA", "SPY", "QQQ", "BTC", "ETH"],
-        "count": 6,
-        "equity_symbols": ["AAPL", "NVDA", "SPY", "QQQ"],
-        "crypto_symbols": ["BTC", "ETH"]
-    }
-    ```
-
-    **Use Cases:**
-    - Symbol discovery
-    - Building symbol lists for analysis
-    - Validating symbol availability
-    """
-    try:
-        from app.config.settings import TICKER_UNIVERSE
-        from app.adapters.ticker_adapter import TickerAdapter
-
-        symbols = list(TICKER_UNIVERSE)
-        equity_symbols = []
-        crypto_symbols = []
-
-        for symbol in symbols:
-            if symbol in TickerAdapter._CRYPTO_SET:
-                crypto_symbols.append(symbol)
-            else:
-                equity_symbols.append(symbol)
-
-        return {
-            "symbols": symbols,
-            "count": len(symbols),
-            "equity_symbols": equity_symbols,
-            "crypto_symbols": crypto_symbols,
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving symbols: {e}")
-
-
-@app.get("/api/v1/data-repair/status")
-@limiter.limit("30/minute")
-def get_data_repair_status(
-    request: Request,
-    key: Optional[str] = Query(None, description="Team API key for authentication"),
-):
-    """Get current status of the data repair service.
-
-    **Authentication:** None required (public endpoint)
-
-    **Returns:**
-    ```json
-    {
-        "running": true,
-        "last_repair_time": "2025-01-15T15:45:00+00:00",
-        "root_path": "data/prices/minute_bars",
-        "symbols_tracked": 25,
-        "market_hours": true,
-        "next_repair_in_minutes": 12
-    }
-    ```
-
-    **Use Cases:**
-    - System health monitoring
-    - Data quality assurance
-    - Troubleshooting data issues
-    """
-    try:
-        from app.services.data_repair_service import data_repair_service
-        from app.services.market_hours import us_equity_market_open
-
-        status = data_repair_service.get_status()
-        market_open = us_equity_market_open()
-
-        # Calculate next repair time
-        next_repair_minutes = 15 if market_open else 60
-
-        return {
-            **status,
-            "market_hours": market_open,
-            "next_repair_in_minutes": next_repair_minutes,
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error retrieving repair status: {e}"
-        )
