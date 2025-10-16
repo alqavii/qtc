@@ -66,10 +66,22 @@ class DataRepairService:
                 # Determine repair interval based on market hours
                 if market_open:
                     interval_minutes = 15
-                    logger.debug("Market hours: using 15-minute repair interval")
+                    # Only log interval changes, not every cycle
+                    if (
+                        not hasattr(self, "_last_market_state")
+                        or self._last_market_state != "open"
+                    ):
+                        logger.info("Market hours: using 15-minute repair interval")
+                        self._last_market_state = "open"
                 else:
                     interval_minutes = 60
-                    logger.debug("Off-hours: using 60-minute repair interval")
+                    # Only log interval changes, not every cycle
+                    if (
+                        not hasattr(self, "_last_market_state")
+                        or self._last_market_state != "closed"
+                    ):
+                        logger.info("Off-hours: using 60-minute repair interval")
+                        self._last_market_state = "closed"
 
                 # Perform repair
                 await self._perform_repair(now)
@@ -99,6 +111,7 @@ class DataRepairService:
             # Check for gaps in recent data
             gaps_found = 0
             repairs_made = 0
+            symbols_with_gaps = []
 
             for symbol in trading_symbols:
                 try:
@@ -107,18 +120,29 @@ class DataRepairService:
                         gaps_found += len(gaps)
                         repaired = await self._repair_gaps(symbol, gaps)
                         repairs_made += repaired
-                        logger.debug(f"Repaired {repaired} gaps for {symbol}")
+                        if repaired > 0:
+                            symbols_with_gaps.append(f"{symbol}({repaired})")
                 except Exception as e:
                     logger.warning(f"Failed to repair {symbol}: {e}")
 
             self._last_repair_time = as_of
 
+            # Only log summary, not individual repairs
             if repairs_made > 0:
                 logger.info(
-                    f"Data repair completed: {repairs_made} gaps repaired for {gaps_found} symbols"
+                    f"Data repair completed: {repairs_made} gaps repaired across {len(symbols_with_gaps)} symbols"
                 )
+                # Log symbols with repairs only if there are few of them
+                if len(symbols_with_gaps) <= 5:
+                    logger.info(f"Repaired symbols: {', '.join(symbols_with_gaps)}")
             else:
-                logger.debug("Data repair completed: no gaps found")
+                # Only log "no gaps" occasionally to avoid spam
+                if (
+                    not hasattr(self, "_last_no_gaps_log")
+                    or (as_of - self._last_no_gaps_log).total_seconds() > 3600
+                ):  # Log once per hour
+                    logger.debug("Data repair completed: no gaps found")
+                    self._last_no_gaps_log = as_of
 
         except Exception as e:
             logger.exception(f"Error during data repair: {e}")
