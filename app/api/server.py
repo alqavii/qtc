@@ -2907,8 +2907,8 @@ def get_alpaca_api_status(request: Request):
                 # Check if keys are in environment or config
                 import os
 
-                alpaca_key = os.getenv("ALPACA_API_KEY") or os.getenv("APCA_API_KEY_ID")
-                alpaca_secret = os.getenv("ALPACA_SECRET_KEY") or os.getenv(
+                alpaca_key = os.getenv("ALPACA_KEY") or os.getenv("APCA_API_KEY_ID")
+                alpaca_secret = os.getenv("ALPACA_SECRET") or os.getenv(
                     "APCA_API_SECRET_KEY"
                 )
 

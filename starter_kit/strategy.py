@@ -1,17 +1,7 @@
-"""
-Simple Example Strategy for QTC Alpha Trading System
+from typing import Optional, Dict, Any, Literal
 
-This is a basic alternating buy/sell strategy that demonstrates the minimum
-required interface for a QTC Alpha strategy.
-
-Features:
-- Alternates between buy and sell signals
-- Demonstrates proper signal construction
-- Shows basic error handling
-- Uses the make_signal helper function
-"""
-
-from typing import Optional, Dict, Any
+OrderType = Literal["market", "limit"]
+TimeInForce = Literal["day", "gtc", "ioc", "fok"]
 
 
 def make_signal(
@@ -19,143 +9,124 @@ def make_signal(
     action: str,
     quantity: float,
     price: float,
-    confidence: Optional[float] = None,
-    reason: Optional[str] = None,
+    order_type: OrderType = "market",
+    time_in_force: TimeInForce = "day",
 ) -> Dict[str, Any]:
-    """Helper function to create valid trading signals."""
-    signal: Dict[str, Any] = {
+    """
+    Build a trading signal dict that matches StrategySignal schema.
+    
+    Args:
+        symbol: Ticker symbol (e.g., "AAPL", "NVDA")
+        action: "buy" or "sell"
+        quantity: Number of shares (fractional allowed)
+        price: Price for the order (current price for market, limit price for limit orders)
+        order_type: "market" (execute immediately) or "limit" (execute at price or better)
+        time_in_force: "day" (cancel at end of day), "gtc" (good till cancelled), 
+                       "ioc" (immediate or cancel), "fok" (fill or kill)
+    
+    Returns:
+        Dict containing the trading signal matching server's StrategySignal schema
+    """
+    sig: Dict[str, Any] = {
         "symbol": symbol,
         "action": action,
         "quantity": quantity,
         "price": price,
+        "order_type": order_type,
+        "time_in_force": time_in_force,
     }
-    if confidence is not None:
-        signal["confidence"] = float(confidence)
-    if reason is not None:
-        signal["reason"] = str(reason)
-    return signal
+    return sig
 
 
 class Strategy:
     """
-    Simple alternating buy/sell strategy.
-
-    This strategy demonstrates the basic interface required by QTC Alpha.
-    It alternates between buying and selling a specified symbol every minute.
-
-    Parameters:
-    - symbol: Symbol to trade (default: "NVDA")
-    - quantity: Number of shares per trade (default: 1)
+    Example strategy demonstrating market and limit orders.
+    
+    Market order (order_type="market"): 
+        - Executes immediately at best available price
+        - Price field is set to current price for reference
+    
+    Limit order (order_type="limit"):
+        - Executes only at specified price or better
+        - Buy limit: Set below current price (e.g., 1% discount)
+        - Sell limit: Set above current price (e.g., 1% premium)
     """
-
+    
     def __init__(self, **kwargs):
-        # Strategy parameters
-        self.symbol = kwargs.get("symbol", "NVDA")
+        self.symbol = "NVDA"
         self.quantity = float(kwargs.get("quantity", 1))
-
-        # State tracking
         self._next_action = "buy"
-
-        print("Simple Strategy initialized:")
-        print(f"  Symbol: {self.symbol}")
-        print(f"  Quantity: {self.quantity}")
+        self.use_limit_orders = False  # Toggle: False for market orders, True for limit orders
 
     @staticmethod
     def _select_symbol(target: str, bars: dict) -> tuple[str, Optional[dict]]:
-        """Find the target symbol in available bars data."""
+        """Find symbol data in bars, with fallback logic."""
         data = bars.get(target)
         if data is not None:
             return target, data
-
-        # Fallback: look for similar symbol names
         for key, value in bars.items():
-            if target.upper() in key.upper():
+            if "NVDA" in key.upper():
                 return key, value
-
         return target, None
 
-    def generate_signal(
-        self,
-        team: Dict[str, Any],
-        bars: Dict[str, Any],
-        current_prices: Dict[str, float],
-    ) -> Optional[Dict[str, Any]]:
+    def generate_signal(self, team: dict, bars: dict, current_prices: dict):
         """
-        Generate trading signal.
-
+        Generate trading signal based on current market data.
+        
         Args:
-            team: Team state including cash, positions, and data API
-            bars: Historical minute bars data
-            current_prices: Latest prices for all symbols
-
+            team: Team state (cash, positions, api access)
+            bars: Historical minute bars per symbol
+            current_prices: Latest prices per symbol
+        
         Returns:
-            Trading signal dict or None if no signal
+            Signal dict or None to skip this minute
         """
-        try:
-            # Find the target symbol in available data
-            symbol, data = self._select_symbol(self.symbol, bars)
+        symbol, data = self._select_symbol(self.symbol, bars)
 
-            # Extract close prices
-            closes = []
-            if data:
-                closes_raw = data.get("close", [])
-                closes = [float(x) for x in closes_raw if x is not None]
+        # Get historical closes for fallback
+        closes: list[float] = []
+        if data:
+            closes_raw = data.get("close") or []
+            closes = [float(x) for x in closes_raw if x is not None]
 
-            # Get current price
-            price_val = current_prices.get(symbol)
-            if price_val is None and closes:
-                price_val = closes[-1]
-
-            if price_val is None or price_val <= 0:
-                return None
-
-            price = float(price_val)
-
-            # Generate alternating signal
-            action = self._next_action
-
-            signal = make_signal(
-                symbol=symbol,
-                action=action,
-                quantity=self.quantity,
-                price=price,
-                confidence=0.5,  # Low confidence for demo
-                reason=f"Alternating {action} order",
-            )
-
-            # Toggle action for next time
-            self._next_action = "sell" if action == "buy" else "buy"
-
-            return signal
-
-        except Exception as e:
-            # Log error but don't crash the strategy
-            print(f"Simple Strategy Error: {e}")
+        # Get current price (prefer current_prices, fallback to last close)
+        price_val = current_prices.get(symbol)
+        if price_val is None and closes:
+            price_val = closes[-1]
+        if price_val is None:
+            return None
+        current_price = float(price_val)
+        if current_price <= 0:
             return None
 
+        # Determine order price and type
+        action = self._next_action
+        
+        if self.use_limit_orders:
+            # LIMIT ORDER: Set specific price (may not execute immediately)
+            order_type = "limit"
+            if action == "buy":
+                # Buy limit: Set below current price (e.g., 1% discount)
+                order_price = current_price * 0.99
+            else:
+                # Sell limit: Set above current price (e.g., 1% premium)
+                order_price = current_price * 1.01
+        else:
+            # MARKET ORDER: Use current price (executes immediately at best available)
+            order_type = "market"
+            order_price = current_price
 
-# Example usage
-if __name__ == "__main__":
-    # Test the strategy
-    strategy = Strategy(symbol="AAPL", quantity=5)
-
-    # Sample team data
-    team = {"id": "test-team", "cash": 10000, "positions": {}, "params": {}}
-
-    # Sample bars data
-    bars = {
-        "AAPL": {
-            "close": [150.0, 150.5, 151.0],
-            "open": [149.5, 150.0, 150.5],
-            "high": [150.2, 150.7, 151.2],
-            "low": [149.0, 149.8, 150.3],
-            "volume": [1000000, 1100000, 1200000],
-        }
-    }
-
-    # Sample current prices
-    current_prices = {"AAPL": 151.0}
-
-    # Generate signal
-    signal = strategy.generate_signal(team, bars, current_prices)
-    print(f"Generated signal: {signal}")
+        # Build and return signal using actual supported fields
+        signal = make_signal(
+            symbol=symbol,
+            action=action,
+            quantity=self.quantity,
+            price=order_price,
+            order_type=order_type,
+            time_in_force="day",  # Cancel unfilled orders at end of trading day
+        )
+        
+        # Alternate between buy and sell
+        self._next_action = "sell" if action == "buy" else "buy"
+        
+        return signal

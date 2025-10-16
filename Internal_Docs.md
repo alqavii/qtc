@@ -6,13 +6,19 @@ sudo systemctl status qtc-api
 
 Restart Orchestartor (used for strats to be implemented)
 sudo systemctl restart qtc-orchestrator  
+sudo systemctl status qtc-orchestrator
 sudo journalctl -u qtc-orchestrator -n 50 --no-pager
+sudo journalctl -u qtc-orchestrator -f
 
 Test endpoints using curl:
+curl "https://api.qtcq.xyz/api/v1/status"
 curl "https://api.qtcq.xyz/api/v1/team/admin/portfolio-history?key=va5tKBRA5Q7CFdFyeyenMO1oZmO-HN8UdhaYuvDPKBQ&days=7&limit=100"
 curl https://api.qtcq.xyz/leaderboard
 curl "https://api.qtcq.xyz/api/v1/team/admin/orders/open?key=va5tKBRA5Q7CFdFyeyenMO1oZmO-HN8UdhaYuvDPKBQ" | jq
 curl "https://api.qtcq.xyz
+
+curl "https://api.qtcq.xyz/api/v1/team/phi/metrics?key=e7oCToqQhy_e0_THS2kd6LRaokyNZbj8IJ0gNq_5DS0"
+curl "https://api.qtcq.xyz/api/v1/team/phi/execution-health?key=e7oCToqQhy_e0_THS2kd6LRaokyNZbj8IJ0gNq_5DS0"
 Admin API KEY: 
 va5tKBRA5Q7CFdFyeyenMO1oZmO-HN8UdhaYuvDPKBQ
 
