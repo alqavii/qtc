@@ -46,6 +46,50 @@ def load_strategy_from_folder(
     return strategy
 
 
+def get_default_empty_strategy() -> _StrategyProtocol:
+    """
+    Returns the default empty strategy that never trades.
+
+    This is used as a fallback when:
+    - No strategy is configured for a team
+    - Strategy loading fails due to errors
+    - Strategy files are missing or corrupted
+    """
+    # Import the default empty strategy
+    default_strategy_path = (
+        Path(__file__).parents[2]
+        / "external_strategies"
+        / "default-empty"
+        / "strategy.py"
+    )
+
+    if not default_strategy_path.exists():
+        # If the default strategy doesn't exist, create a minimal one inline
+        class DefaultEmptyStrategy:
+            def __init__(self, **kwargs):
+                pass
+
+            def generate_signal(self, team, bars, current_prices):
+                return None
+
+        return cast(_StrategyProtocol, DefaultEmptyStrategy())
+
+    try:
+        StrategyCls = _load_class_from_file(default_strategy_path, "Strategy")
+        strategy: _StrategyProtocol = cast(_StrategyProtocol, StrategyCls())
+        return strategy
+    except Exception:
+        # If loading fails, return a minimal inline strategy
+        class DefaultEmptyStrategy:
+            def __init__(self, **kwargs):
+                pass
+
+            def generate_signal(self, team, bars, current_prices):
+                return None
+
+        return cast(_StrategyProtocol, DefaultEmptyStrategy())
+
+
 def _io_test_strategy(strategy: _StrategyProtocol) -> None:
     """Runs generate_signal once with dummy data"""
 

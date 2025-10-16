@@ -406,6 +406,214 @@ def _manual_trade(
 # Removed pullstrat function - strategies now uploaded via web interface
 
 
+def view_all_errors(
+    limit: int = 50, team_id: str | None = None, error_type: str | None = None
+) -> None:
+    """Display all system errors across all teams and components."""
+    from app.telemetry.error_handler import error_handler_instance
+    from app.config.environments import EnvironmentConfig
+
+    config = EnvironmentConfig(os.getenv("QTC_ENV", "development"))
+    errors: List[Dict[str, Any]] = []
+
+    print("=== System Error Report ===")
+    print(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print()
+
+    # Get errors from global error handler
+    error_summary = error_handler_instance.get_error_summary()
+    global_errors = error_summary.get("recent_errors", [])
+
+    # Get errors from team-specific files
+    team_errors = []
+    team_dir = config.get_data_path("team")
+    if team_dir.exists():
+        for team_folder in team_dir.iterdir():
+            if team_folder.is_dir():
+                error_file = team_folder / "errors.jsonl"
+                if error_file.exists():
+                    try:
+                        with open(error_file, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    error = json.loads(line)
+                                    error["source"] = "team_file"
+                                    error["team_id"] = team_folder.name
+                                    team_errors.append(error)
+                                except Exception:
+                                    continue
+                    except Exception:
+                        continue
+
+    # Combine all errors
+    all_errors = global_errors + team_errors
+
+    # Apply filters
+    if team_id:
+        all_errors = [e for e in all_errors if e.get("team_id") == team_id]
+        print(f"Filtered by team: {team_id}")
+
+    if error_type:
+        all_errors = [e for e in all_errors if e.get("error_type") == error_type]
+        print(f"Filtered by error type: {error_type}")
+
+    # Sort by timestamp (newest first)
+    all_errors.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    # Limit results
+    filtered_errors = all_errors[:limit]
+
+    print(f"Total errors found: {len(all_errors)}")
+    print(f"Showing: {len(filtered_errors)}")
+    print()
+
+    if not filtered_errors:
+        print("No errors found.")
+        return
+
+    # Generate summary statistics
+    by_category = {}
+    by_team = {}
+    by_type = {}
+
+    for error in all_errors:
+        category = error.get("category", "unknown")
+        team = error.get("team_id", "unknown")
+        error_type_name = error.get("error_type", "unknown")
+
+        by_category[category] = by_category.get(category, 0) + 1
+        by_team[team] = by_team.get(team, 0) + 1
+        by_type[error_type_name] = by_type.get(error_type_name, 0) + 1
+
+    # Print summary
+    print("=== Error Summary ===")
+    print("By Category:")
+    for cat, count in sorted(by_category.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {cat}: {count}")
+
+    print("\nBy Team:")
+    for team, count in sorted(by_team.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {team}: {count}")
+
+    print("\nBy Error Type:")
+    for err_type, count in sorted(by_type.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {err_type}: {count}")
+
+    print("\n=== Recent Errors ===")
+    for i, error in enumerate(filtered_errors, 1):
+        timestamp = error.get("timestamp", "unknown")
+        category = error.get("category", "unknown")
+        error_type_name = error.get("error_type", "unknown")
+        message = error.get("message", "No message")
+        team_id = error.get("team_id", "unknown")
+
+        print(f"{i:3d}. [{timestamp}] {category.upper()} - {error_type_name}")
+        print(f"     Team: {team_id}")
+        print(f"     Message: {message}")
+
+        # Show context if available
+        context = error.get("context", {})
+        if context:
+            context_str = ", ".join(f"{k}={v}" for k, v in context.items())
+            print(f"     Context: {context_str}")
+
+        print()
+
+
+def check_alpaca_status() -> None:
+    """Check Alpaca API key status and connectivity."""
+    print("=== Alpaca API Status Check ===")
+    print(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print()
+
+    try:
+        from app.adapters.alpaca_broker import load_broker_from_env
+
+        # Check if API keys are loaded
+        print("Checking API Keys...")
+        try:
+            # Try to get account info to verify keys are loaded
+            broker = load_broker_from_env()
+            if broker is None:
+                print("ERROR API Keys: Not configured")
+                return
+            account = broker.get_account()
+            if account:
+                print("OK API Keys: Loaded and working")
+                print("OK Trading API: Connected")
+
+                # Extract account information
+                account_id = account.get("id", "unknown")
+                status = account.get("status", "unknown")
+                trading_blocked = account.get("trading_blocked", True)
+                buying_power = float(account.get("buying_power", 0))
+                cash = float(account.get("cash", 0))
+                portfolio_value = float(account.get("portfolio_value", 0))
+
+                print("\nAccount Information:")
+                print(f"   Account ID: {account_id}")
+                print(f"   Status: {status}")
+                print(f"   Trading Blocked: {'Yes' if trading_blocked else 'No'}")
+                print(f"   Buying Power: ${buying_power:,.2f}")
+                print(f"   Cash: ${cash:,.2f}")
+                print(f"   Portfolio Value: ${portfolio_value:,.2f}")
+
+                # Check permissions
+                trading_enabled = not trading_blocked
+                print("\nPermissions:")
+                print(f"   Trading Enabled: {'Yes' if trading_enabled else 'No'}")
+                print("   Market Data: Yes")
+                print(
+                    f"   Paper Trading: {'Yes' if account.get('pattern_day_trader', False) else 'No'}"
+                )
+
+            else:
+                print("ERROR API Keys: Failed to get account information")
+
+        except Exception as e:
+            print(f"ERROR Trading API: Failed - {str(e)}")
+
+        # Test market data connectivity
+        print("\nChecking Market Data...")
+        try:
+            from app.adapters.ticker_adapter import TickerAdapter
+
+            adapter = TickerAdapter()
+            print("OK Market Data API: Connected")
+        except Exception as e:
+            print(f"ERROR Market Data API: Failed - {str(e)}")
+
+        # Check environment variables
+        print("\nEnvironment Variables:")
+        import os
+
+        alpaca_key = os.getenv("ALPACA_API_KEY") or os.getenv("APCA_API_KEY_ID")
+        alpaca_secret = os.getenv("ALPACA_SECRET_KEY") or os.getenv(
+            "APCA_API_SECRET_KEY"
+        )
+
+        if alpaca_key:
+            print(f"   ALPACA_API_KEY: {'*' * 8}{alpaca_key[-4:]}")
+        else:
+            print("   ALPACA_API_KEY: Not set")
+
+        if alpaca_secret:
+            print(f"   ALPACA_SECRET_KEY: {'*' * 8}{alpaca_secret[-4:]}")
+        else:
+            print("   ALPACA_SECRET_KEY: Not set")
+
+    except Exception as e:
+        print(f"ERROR System Error: {str(e)}")
+        print("\nTroubleshooting:")
+        print("1. Check if Alpaca API keys are set in environment variables")
+        print("2. Verify the keys are valid and have proper permissions")
+        print("3. Check network connectivity to Alpaca servers")
+        print("4. Ensure you're using the correct environment (paper vs live)")
+
+
 def check_status(*, show_positions: bool = False) -> None:
     """Display the runtime status emitted by the orchestrator."""
     cfg = EnvironmentConfig(os.getenv("QTC_ENV", "development"))
@@ -584,6 +792,27 @@ def main() -> None:
         help="Include position-level details for each team",
     )
 
+    # Error and debugging commands
+    ve = sub.add_parser("viewerrors", help="View all system errors across teams")
+    ve.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum number of errors to show (default: 50)",
+    )
+    ve.add_argument(
+        "--team",
+        help="Filter errors by specific team ID",
+    )
+    ve.add_argument(
+        "--type",
+        help="Filter errors by error type (e.g., TimeoutError, ValidationError)",
+    )
+
+    as_cmd = sub.add_parser(
+        "alpacastatus", help="Check Alpaca API key status and connectivity"
+    )
+
     args = p.parse_args()
     if args.cmd == "viewteams":
         view_teams()
@@ -654,6 +883,12 @@ def main() -> None:
 
     elif args.cmd == "checkstatus":
         check_status(show_positions=args.details)
+
+    elif args.cmd == "viewerrors":
+        view_all_errors(limit=args.limit, team_id=args.team, error_type=args.type)
+
+    elif args.cmd == "alpacastatus":
+        check_alpaca_status()
 
 
 if __name__ == "__main__":

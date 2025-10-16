@@ -17,7 +17,10 @@ from app.services.minute_service import MinuteService
 from app.services.trade_executor import trade_executor
 from app.services.caching import cache_manager
 from app.models.teams import Team, Strategy, Portfolio
-from app.loaders.strategy_loader import load_strategy_from_folder
+from app.loaders.strategy_loader import (
+    load_strategy_from_folder,
+    get_default_empty_strategy,
+)
 from app.models.ticker_data import MinuteBar
 from app.models.trading import StrategySignal, TradeRequest
 from app.performance.performance_tracker import performance_tracker
@@ -109,7 +112,7 @@ class QTCAlphaOrchestrator:
     def create_team(
         self,
         name: str,
-        repo_path: str,
+        repo_path: Optional[str],
         entry_point: str,
         initial_cash: Decimal = Decimal("10000"),
         params: Optional[Dict[str, Any]] = None,
@@ -130,7 +133,7 @@ class QTCAlphaOrchestrator:
         # Use the registry/team slug as the runtime team key
         self.teams[name] = team
         logger.info(
-            f"Created team {name} with strategy {entry_point} at {repo_path} and ${initial_cash} initial capital"
+            f"Created team {name} with strategy {entry_point} at {repo_path or 'default empty strategy'} and ${initial_cash} initial capital"
         )
 
         return team
@@ -421,20 +424,28 @@ class QTCAlphaOrchestrator:
         strat = self._loaded_strategies.get(team_key)
         if strat is None:
             if not team.strategy.repoPath or not team.strategy.entryPoint:
-                logger.warning(f"No strategy configured for team {team.name}")
-                return
-            try:
-                strat = load_strategy_from_folder(
-                    team.strategy.repoPath, team.strategy.entryPoint
+                logger.warning(
+                    f"No strategy configured for team {team.name}, using default empty strategy"
                 )
+                strat = get_default_empty_strategy()
                 self._loaded_strategies[team_key] = strat
-            except Exception as e:
-                error_handler_instance.handle_strategy_error(
-                    strategy_name=str(team.strategy.entryPoint),
-                    error=e,
-                    team_id=team_key,
-                )
-                return
+            else:
+                try:
+                    strat = load_strategy_from_folder(
+                        team.strategy.repoPath, team.strategy.entryPoint
+                    )
+                    self._loaded_strategies[team_key] = strat
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load strategy for team {team.name}: {e}, using default empty strategy"
+                    )
+                    error_handler_instance.handle_strategy_error(
+                        strategy_name=str(team.strategy.entryPoint),
+                        error=e,
+                        team_id=team_key,
+                    )
+                    strat = get_default_empty_strategy()
+                    self._loaded_strategies[team_key] = strat
 
         # Prepare IO payloads expected by user strategies
         team_io: Dict[str, Any] = {
@@ -865,27 +876,35 @@ def _load_teams_from_registry(
                 print(f"Using web-uploaded strategy for team {name}")
             else:
                 print(
-                    f"Skipping team {name}: no strategy found. Upload via web interface."
+                    f"No strategy found for team {name}, will use default empty strategy"
                 )
-                continue
+                # Set repo_dir to None - the orchestrator will use default strategy
+                repo_dir = None
 
         try:
             # If repo_dir already points to external_strategies/<team_id>, do not
             # re-prepare (which would delete the folder we just synced). Just use it.
             use_repo = repo_dir
-            try:
-                strat_root = STRATEGY_ROOT.resolve()
-                if use_repo.resolve().is_dir() and (
-                    use_repo.resolve() == (strat_root / name).resolve()
-                ):
-                    if not (use_repo / "strategy.py").exists():
-                        raise FileNotFoundError(f"strategy.py not found in {use_repo}")
-                    stable = use_repo
-                else:
+
+            if use_repo is None:
+                # No strategy found - will use default empty strategy
+                stable = None
+            else:
+                try:
+                    strat_root = STRATEGY_ROOT.resolve()
+                    if use_repo.resolve().is_dir() and (
+                        use_repo.resolve() == (strat_root / name).resolve()
+                    ):
+                        if not (use_repo / "strategy.py").exists():
+                            raise FileNotFoundError(
+                                f"strategy.py not found in {use_repo}"
+                            )
+                        stable = use_repo
+                    else:
+                        stable = _prepare_strategy_workspace(name, use_repo)
+                except Exception:
+                    # Fallback to prepare workspace if any path resolution check fails
                     stable = _prepare_strategy_workspace(name, use_repo)
-            except Exception:
-                # Fallback to prepare workspace if any path resolution check fails
-                stable = _prepare_strategy_workspace(name, use_repo)
         except Exception as exc:
             print(f"Skipping team {name}: could not prepare strategy ({exc})")
             continue
@@ -896,7 +915,7 @@ def _load_teams_from_registry(
         out.append(
             {
                 "team_id": name,
-                "repo_dir": str(stable),
+                "repo_dir": str(stable) if stable else None,
                 "entry_point": entry_point,
                 "initial_cash": cash,
                 "params": combined_params,

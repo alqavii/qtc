@@ -2680,3 +2680,258 @@ def get_team_positions_summary(
         "current_positions": current_position_count,
         "symbols": symbols_summary,
     }
+
+
+@app.get("/api/v1/system/errors")
+@limiter.limit("30/minute")
+def get_all_system_errors(
+    request: Request,
+    limit: Optional[int] = Query(
+        100, description="Maximum number of errors to return", ge=1, le=1000
+    ),
+    team_id: Optional[str] = Query(None, description="Filter errors by team ID"),
+    error_type: Optional[str] = Query(None, description="Filter by error type"),
+):
+    """Get all system errors across all teams and components.
+
+    This endpoint provides comprehensive error visibility for debugging and monitoring.
+    It aggregates errors from multiple sources:
+    - Global error log (qtc_alpha_errors.log)
+    - Team-specific error files
+    - Strategy execution errors
+    - System component errors
+
+    **Parameters:**
+    - `limit`: Maximum number of errors to return (1-1000)
+    - `team_id`: Optional filter by specific team
+    - `error_type`: Optional filter by error type (e.g., "strategy", "data", "system")
+
+    **Returns:**
+    ```json
+    {
+        "total_errors": 45,
+        "filtered_errors": 12,
+        "errors": [
+            {
+                "timestamp": "2025-10-15T15:45:00+00:00",
+                "category": "strategy",
+                "error_type": "TimeoutError",
+                "message": "Strategy execution timeout",
+                "team_id": "team-alpha",
+                "strategy": "MACDStrategy",
+                "context": {"phase": "signal_generation"}
+            }
+        ],
+        "error_summary": {
+            "by_category": {"strategy": 30, "data": 10, "system": 5},
+            "by_team": {"team-alpha": 25, "team-beta": 20},
+            "by_type": {"TimeoutError": 15, "ValidationError": 10}
+        }
+    }
+    ```
+    """
+    from app.telemetry.error_handler import error_handler_instance
+    from app.config.environments import EnvironmentConfig
+    import os
+
+    config = EnvironmentConfig(os.getenv("QTC_ENV", "development"))
+
+    # Get errors from global error handler
+    error_summary = error_handler_instance.get_error_summary()
+    global_errors = error_summary.get("recent_errors", [])
+
+    # Get errors from team-specific files
+    team_errors = []
+    team_dir = config.get_data_path("team")
+    if team_dir.exists():
+        for team_folder in team_dir.iterdir():
+            if team_folder.is_dir():
+                error_file = team_folder / "errors.jsonl"
+                if error_file.exists():
+                    try:
+                        with open(error_file, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    error = json.loads(line)
+                                    error["source"] = "team_file"
+                                    error["team_id"] = team_folder.name
+                                    team_errors.append(error)
+                                except Exception:
+                                    continue
+                    except Exception:
+                        continue
+
+    # Combine all errors
+    all_errors = global_errors + team_errors
+
+    # Apply filters
+    if team_id:
+        all_errors = [e for e in all_errors if e.get("team_id") == team_id]
+
+    if error_type:
+        all_errors = [e for e in all_errors if e.get("error_type") == error_type]
+
+    # Sort by timestamp (newest first)
+    all_errors.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    # Limit results
+    filtered_errors = all_errors[:limit]
+
+    # Generate summary statistics
+    by_category = {}
+    by_team = {}
+    by_type = {}
+
+    for error in all_errors:
+        category = error.get("category", "unknown")
+        team = error.get("team_id", "unknown")
+        error_type_name = error.get("error_type", "unknown")
+
+        by_category[category] = by_category.get(category, 0) + 1
+        by_team[team] = by_team.get(team, 0) + 1
+        by_type[error_type_name] = by_type.get(error_type_name, 0) + 1
+
+    return {
+        "total_errors": len(all_errors),
+        "filtered_errors": len(filtered_errors),
+        "errors": filtered_errors,
+        "error_summary": {
+            "by_category": by_category,
+            "by_team": by_team,
+            "by_type": by_type,
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/v1/system/alpaca-status")
+@limiter.limit("30/minute")
+def get_alpaca_api_status(request: Request):
+    """Check Alpaca API key status and connectivity.
+
+    This endpoint verifies:
+    - API keys are loaded and configured
+    - Alpaca API connectivity
+    - Account status and permissions
+    - Market data access
+
+    **Returns:**
+    ```json
+    {
+        "api_keys_loaded": true,
+        "connectivity": {
+            "trading_api": "connected",
+            "market_data_api": "connected"
+        },
+        "account_status": {
+            "account_id": "12345678-1234-1234-1234-123456789012",
+            "status": "ACTIVE",
+            "trading_blocked": false,
+            "buying_power": 10000.00
+        },
+        "permissions": {
+            "trading_enabled": true,
+            "market_data_enabled": true,
+            "paper_trading": true
+        },
+        "last_check": "2025-10-15T15:45:00+00:00"
+    }
+    ```
+    """
+    try:
+        from app.adapters.alpaca_broker import load_broker_from_env
+
+        status = {
+            "api_keys_loaded": False,
+            "connectivity": {"trading_api": "unknown", "market_data_api": "unknown"},
+            "account_status": {},
+            "permissions": {},
+            "last_check": datetime.now(timezone.utc).isoformat(),
+            "errors": [],
+        }
+
+        # Check if API keys are loaded
+        try:
+            # Try to get account info to verify keys are loaded
+            broker = load_broker_from_env()
+            if broker is None:
+                status["errors"].append(
+                    "No Alpaca API keys found in environment variables"
+                )
+                return status
+            account = broker.get_account()
+            if account:
+                status["api_keys_loaded"] = True
+                status["connectivity"]["trading_api"] = "connected"
+
+                # Extract account information
+                status["account_status"] = {
+                    "account_id": account.get("id", "unknown"),
+                    "status": account.get("status", "unknown"),
+                    "trading_blocked": account.get("trading_blocked", True),
+                    "buying_power": float(account.get("buying_power", 0)),
+                    "cash": float(account.get("cash", 0)),
+                    "portfolio_value": float(account.get("portfolio_value", 0)),
+                }
+
+                # Check permissions
+                status["permissions"] = {
+                    "trading_enabled": not account.get("trading_blocked", True),
+                    "market_data_enabled": True,  # Assume true if we got account info
+                    "paper_trading": account.get("pattern_day_trader", False),
+                }
+            else:
+                status["errors"].append("Failed to get account information")
+
+        except Exception as e:
+            status["errors"].append(f"Account check failed: {str(e)}")
+            status["connectivity"]["trading_api"] = "failed"
+
+        # Test market data connectivity
+        try:
+            # Try to get a simple market data request
+            from app.adapters.ticker_adapter import TickerAdapter
+
+            TickerAdapter()  # Test instantiation
+            status["connectivity"]["market_data_api"] = "connected"
+        except Exception as e:
+            status["connectivity"]["market_data_api"] = "failed"
+            status["errors"].append(f"Market data check failed: {str(e)}")
+
+        # Check if we have API keys configured
+        if not status["api_keys_loaded"]:
+            try:
+                # Check if keys are in environment or config
+                import os
+
+                alpaca_key = os.getenv("ALPACA_API_KEY") or os.getenv("APCA_API_KEY_ID")
+                alpaca_secret = os.getenv("ALPACA_SECRET_KEY") or os.getenv(
+                    "APCA_API_SECRET_KEY"
+                )
+
+                if alpaca_key and alpaca_secret:
+                    status["api_keys_loaded"] = True
+                    status["connectivity"]["trading_api"] = (
+                        "keys_loaded_but_connection_failed"
+                    )
+                else:
+                    status["errors"].append(
+                        "No Alpaca API keys found in environment variables"
+                    )
+            except Exception as e:
+                status["errors"].append(f"Key check failed: {str(e)}")
+
+        return status
+
+    except Exception as e:
+        return {
+            "api_keys_loaded": False,
+            "connectivity": {"trading_api": "error", "market_data_api": "error"},
+            "account_status": {},
+            "permissions": {},
+            "last_check": datetime.now(timezone.utc).isoformat(),
+            "errors": [f"System error: {str(e)}"],
+        }
