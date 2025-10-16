@@ -48,7 +48,7 @@ Run the orchestrator with admin strategy:
 ```bash
 cd /opt/qtc
 python3 -m app.main \
-  --teams "admin;./external_strategies/admin;strategy:Strategy;100000" \
+  --teams "admin;./external_strategies/admin;strategy:Strategy;10000" \
   --duration 5
 ```
 
@@ -141,7 +141,7 @@ self.use_limit_orders = self.params.get('use_limit_orders', True)
 Or pass as parameter:
 ```bash
 python3 -m app.main \
-  --teams "admin;./external_strategies/admin;strategy:Strategy;100000" \
+  --teams "admin;./external_strategies/admin;strategy:Strategy;10000" \
   --team-params "admin:use_limit_orders=True"
 ```
 
@@ -157,15 +157,15 @@ Test the other strategy variants:
 ```bash
 # Aggressive (market orders only)
 python3 -m app.main \
-  --teams "admin;./external_strategies/admin;strategy:AggressiveStrategy;100000"
+  --teams "admin;./external_strategies/admin;strategy:AggressiveStrategy;10000"
 
 # Conservative (limit orders with GTC)
 python3 -m app.main \
-  --teams "admin;./external_strategies/admin;strategy:ConservativeStrategy;100000"
+  --teams "admin;./external_strategies/admin;strategy:ConservativeStrategy;10000"
 
 # Scalping (IOC orders)
 python3 -m app.main \
-  --teams "admin;./external_strategies/admin;strategy:ScalpingStrategy;100000"
+  --teams "admin;./external_strategies/admin;strategy:ScalpingStrategy;10000"
 ```
 
 ---
@@ -189,7 +189,7 @@ ALPACA_PAPER=true
 2. Start the orchestrator:
 ```bash
 python3 -m app.main \
-  --teams "admin;./external_strategies/admin;strategy:Strategy;100000" \
+  --teams "admin;./external_strategies/admin;strategy:Strategy;10000" \
   --duration 10
 ```
 
