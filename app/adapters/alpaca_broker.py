@@ -6,8 +6,13 @@ from decimal import Decimal
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.trading.requests import (
+    MarketOrderRequest,
+    LimitOrderRequest,
+    GetOrdersRequest,
+    GetAssetsRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus, AssetClass
 
 
 @dataclass
@@ -22,6 +27,69 @@ class AlpacaBroker:
         self._client = TradingClient(
             api_key=config.api_key, secret_key=config.api_secret, paper=config.paper
         )
+        self._crypto_symbols_cache: Optional[set] = None
+
+    def _get_crypto_symbols(self) -> set:
+        """Get cached list of tradable crypto symbols from Alpaca."""
+        if self._crypto_symbols_cache is None:
+            try:
+                search_params = GetAssetsRequest(asset_class=AssetClass.CRYPTO)
+                crypto_assets = self._client.get_all_assets(search_params)
+                self._crypto_symbols_cache = {
+                    asset.symbol for asset in crypto_assets if asset.tradable
+                }
+            except Exception:
+                # Fallback to known crypto symbols if API call fails
+                self._crypto_symbols_cache = {
+                    "BTC/USD",
+                    "ETH/USD",
+                    "SOL/USD",
+                    "DOGE/USD",
+                    "XRP/USD",
+                    "ADA/USD",
+                    "LTC/USD",
+                    "BNB/USD",
+                    "DOT/USD",
+                    "AVAX/USD",
+                    "LINK/USD",
+                    "MATIC/USD",
+                    "ATOM/USD",
+                    "ARB/USD",
+                    "OP/USD",
+                    "BCH/USD",
+                    "ETC/USD",
+                    "NEAR/USD",
+                    "APT/USD",
+                    "TON/USD",
+                }
+        return self._crypto_symbols_cache
+
+    def _is_crypto_symbol(self, symbol: str) -> bool:
+        """Check if a symbol is a cryptocurrency."""
+        # Check if symbol is already in crypto format (e.g., BTC/USD)
+        if "/" in symbol.upper():
+            return symbol.upper() in self._get_crypto_symbols()
+
+        # Check if base symbol (e.g., BTC) maps to a crypto pair
+        crypto_symbols = self._get_crypto_symbols()
+        return f"{symbol.upper()}/USD" in crypto_symbols
+
+    def _convert_crypto_symbol(self, symbol: str) -> str:
+        """Convert crypto symbol to Alpaca format (BTC -> BTC/USD)."""
+        symbol_upper = symbol.upper()
+
+        # If already in crypto format, return as-is
+        if "/" in symbol_upper:
+            return symbol_upper
+
+        # Convert base symbol to crypto pair format
+        return f"{symbol_upper}/USD"
+
+    def _prepare_symbol(self, symbol: str) -> str:
+        """Prepare symbol for Alpaca trading (convert crypto symbols if needed)."""
+        if self._is_crypto_symbol(symbol):
+            return self._convert_crypto_symbol(symbol)
+        return symbol.upper()
 
     def placeMarketOrder(
         self,
@@ -32,16 +100,26 @@ class AlpacaBroker:
     ) -> str:
         """Submit a market order. Supports fractional qty for eligible assets.
 
+        Automatically handles crypto symbols by converting them to the correct format (BTC -> BTC/USD).
+
         Alpaca accepts fractional quantities when the account permissions allow it.
         To avoid truncation, send the quantity as a string preserving decimals.
         """
+        # Prepare symbol (convert crypto symbols if needed)
+        alpaca_symbol = self._prepare_symbol(symbol)
         order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
         qty_str = str(quantity)
+
+        # Use GTC for crypto (24/7 trading) and DAY for equities
+        time_in_force = (
+            TimeInForce.GTC if self._is_crypto_symbol(symbol) else TimeInForce.DAY
+        )
+
         req = MarketOrderRequest(
-            symbol=symbol,
+            symbol=alpaca_symbol,
             qty=qty_str,
             side=order_side,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=time_in_force,
         )
         if clientOrderId is not None:
             # alpaca-py MarketOrderRequest supports client_order_id
@@ -87,23 +165,27 @@ class AlpacaBroker:
         clientOrderId: Optional[str] = None,
     ) -> str:
         """Submit a limit order at specified price.
-        
+
+        Automatically handles crypto symbols by converting them to the correct format (BTC -> BTC/USD).
+
         Args:
-            symbol: Stock symbol (e.g., 'AAPL')
+            symbol: Stock or crypto symbol (e.g., 'AAPL', 'BTC')
             side: 'buy' or 'sell'
             quantity: Quantity to trade (supports fractional shares)
             limit_price: Maximum price for buy, minimum price for sell
             time_in_force: 'day', 'gtc', 'ioc', 'fok' (default: 'day')
             clientOrderId: Optional client-provided order ID
-            
+
         Returns:
             Alpaca order ID as string
         """
+        # Prepare symbol (convert crypto symbols if needed)
+        alpaca_symbol = self._prepare_symbol(symbol)
         order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
         qty_str = str(quantity)
         limit_price_str = str(limit_price)
-        
-        # Map time_in_force string to enum
+
+        # Map time_in_force string to enum, with crypto-specific defaults
         tif_map = {
             "day": TimeInForce.DAY,
             "gtc": TimeInForce.GTC,
@@ -111,9 +193,13 @@ class AlpacaBroker:
             "fok": TimeInForce.FOK,
         }
         tif = tif_map.get(time_in_force.lower(), TimeInForce.DAY)
-        
+
+        # For crypto, default to GTC if not specified (24/7 trading)
+        if self._is_crypto_symbol(symbol) and time_in_force.lower() == "day":
+            tif = TimeInForce.GTC
+
         req = LimitOrderRequest(
-            symbol=symbol,
+            symbol=alpaca_symbol,
             qty=qty_str,
             side=order_side,
             time_in_force=tif,
@@ -121,16 +207,16 @@ class AlpacaBroker:
         )
         if clientOrderId is not None:
             setattr(req, "client_order_id", clientOrderId)
-        
+
         order = self._client.submit_order(order_data=req)
         return str(order.id)
 
     def getOrderById(self, order_id: str) -> dict:
         """Get order details by order ID.
-        
+
         Args:
             order_id: Alpaca order ID
-            
+
         Returns:
             Dictionary with order details including:
             - id: Order ID
@@ -153,9 +239,15 @@ class AlpacaBroker:
             "symbol": order.symbol,
             "qty": order.qty,
             "filled_qty": getattr(order, "filled_qty", None),
-            "side": order.side.value if hasattr(order.side, "value") else str(order.side),
-            "type": order.type.value if hasattr(order.type, "value") else str(order.type),
-            "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+            "side": order.side.value
+            if hasattr(order.side, "value")
+            else str(order.side),
+            "type": order.type.value
+            if hasattr(order.type, "value")
+            else str(order.type),
+            "status": order.status.value
+            if hasattr(order.status, "value")
+            else str(order.status),
             "filled_avg_price": getattr(order, "filled_avg_price", None),
             "limit_price": getattr(order, "limit_price", None),
             "created_at": order.created_at,
@@ -164,13 +256,13 @@ class AlpacaBroker:
 
     def getAllOrders(self, status: str = "open") -> list[dict]:
         """Get all orders with specified status.
-        
+
         Args:
             status: Order status filter - "open", "closed", "all"
                    - "open": pending, new, partially_filled, accepted
                    - "closed": filled, cancelled, expired, rejected
                    - "all": all orders
-        
+
         Returns:
             List of order dictionaries with details
         """
@@ -180,43 +272,53 @@ class AlpacaBroker:
             "closed": QueryOrderStatus.CLOSED,
             "all": QueryOrderStatus.ALL,
         }
-        
+
         query_status = status_map.get(status.lower(), QueryOrderStatus.OPEN)
-        
+
         # Create request for orders
         request = GetOrdersRequest(status=query_status, limit=500)
         orders = self._client.get_orders(filter=request)
-        
+
         result = []
         for order in orders:
-            result.append({
-                "id": str(order.id),
-                "client_order_id": getattr(order, "client_order_id", None),
-                "symbol": order.symbol,
-                "qty": order.qty,
-                "filled_qty": getattr(order, "filled_qty", None),
-                "side": order.side.value if hasattr(order.side, "value") else str(order.side),
-                "type": order.type.value if hasattr(order.type, "value") else str(order.type),
-                "status": order.status.value if hasattr(order.status, "value") else str(order.status),
-                "filled_avg_price": getattr(order, "filled_avg_price", None),
-                "limit_price": getattr(order, "limit_price", None),
-                "time_in_force": order.time_in_force.value if hasattr(order.time_in_force, "value") else str(order.time_in_force),
-                "created_at": order.created_at,
-                "updated_at": getattr(order, "updated_at", None),
-                "submitted_at": getattr(order, "submitted_at", None),
-                "filled_at": getattr(order, "filled_at", None),
-                "expired_at": getattr(order, "expired_at", None),
-                "cancelled_at": getattr(order, "cancelled_at", None),
-            })
-        
+            result.append(
+                {
+                    "id": str(order.id),
+                    "client_order_id": getattr(order, "client_order_id", None),
+                    "symbol": order.symbol,
+                    "qty": order.qty,
+                    "filled_qty": getattr(order, "filled_qty", None),
+                    "side": order.side.value
+                    if hasattr(order.side, "value")
+                    else str(order.side),
+                    "type": order.type.value
+                    if hasattr(order.type, "value")
+                    else str(order.type),
+                    "status": order.status.value
+                    if hasattr(order.status, "value")
+                    else str(order.status),
+                    "filled_avg_price": getattr(order, "filled_avg_price", None),
+                    "limit_price": getattr(order, "limit_price", None),
+                    "time_in_force": order.time_in_force.value
+                    if hasattr(order.time_in_force, "value")
+                    else str(order.time_in_force),
+                    "created_at": order.created_at,
+                    "updated_at": getattr(order, "updated_at", None),
+                    "submitted_at": getattr(order, "submitted_at", None),
+                    "filled_at": getattr(order, "filled_at", None),
+                    "expired_at": getattr(order, "expired_at", None),
+                    "cancelled_at": getattr(order, "cancelled_at", None),
+                }
+            )
+
         return result
 
     def cancelOrder(self, order_id: str) -> dict:
         """Cancel an open order.
-        
+
         Args:
             order_id: Alpaca order ID
-            
+
         Returns:
             Dictionary with cancellation status
         """
@@ -225,14 +327,10 @@ class AlpacaBroker:
             return {
                 "success": True,
                 "order_id": order_id,
-                "message": "Order cancelled successfully"
+                "message": "Order cancelled successfully",
             }
         except Exception as e:
-            return {
-                "success": False,
-                "order_id": order_id,
-                "error": str(e)
-            }
+            return {"success": False, "order_id": order_id, "error": str(e)}
 
 
 def _load_env_file(path: Path) -> None:

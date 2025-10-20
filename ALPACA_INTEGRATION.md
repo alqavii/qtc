@@ -145,7 +145,7 @@ Strategies return signals with the following structure:
 
 ```python
 {
-    "symbol": "AAPL",           # Required: Stock ticker
+    "symbol": "AAPL",           # Required: Stock ticker or crypto symbol
     "action": "buy",            # Required: "buy" or "sell"
     "quantity": 10,             # Required: Number of shares (supports fractional)
     "price": 150.50,            # Required: Reference/limit price
@@ -153,6 +153,10 @@ Strategies return signals with the following structure:
     "time_in_force": "day"      # Optional: "day" (default), "gtc", "ioc", "fok"
 }
 ```
+
+### Supported Symbols
+- **Stocks**: `"AAPL"`, `"GOOGL"`, `"TSLA"`, etc.
+- **Cryptocurrencies**: `"BTC"`, `"ETH"`, `"SOL"`, etc. (automatically converted to `BTC/USD`, `ETH/USD`, etc.)
 
 ### Market Order Example
 ```python
@@ -177,19 +181,71 @@ return {
 }
 ```
 
+### Crypto Trading Examples
+
+#### Crypto Market Order
+```python
+return {
+    "symbol": "BTC",           # Automatically converted to BTC/USD
+    "action": "buy",
+    "quantity": 0.1,           # Fractional crypto amounts supported
+    "price": 50000.00,        # Reference price
+    "order_type": "market"     # Executes immediately at market price
+}
+```
+
+#### Crypto Limit Order
+```python
+return {
+    "symbol": "ETH",           # Automatically converted to ETH/USD
+    "action": "sell",
+    "quantity": 0.5,
+    "price": 3000.00,         # Will only sell at $3000.00 or higher
+    "order_type": "limit",
+    "time_in_force": "gtc"     # Good until cancelled (24/7 crypto trading)
+}
+```
+
+## Crypto Trading Features
+
+### Automatic Symbol Conversion
+- Crypto symbols are automatically converted to Alpaca format
+- `"BTC"` → `"BTC/USD"`, `"ETH"` → `"ETH/USD"`, etc.
+- No manual symbol formatting required
+
+### 24/7 Trading Support
+- Crypto markets trade 24/7 (unlike stock markets)
+- Market hours validation automatically allows crypto trading at any time
+- Crypto orders use `GTC` (Good Until Cancelled) by default for better 24/7 execution
+
+### Fractional Trading
+- Both stocks and crypto support fractional quantities
+- Examples: `0.1 BTC`, `0.5 ETH`, `10.5 AAPL`
+- Quantities passed as strings to preserve decimal precision
+
+### Supported Cryptocurrencies
+The system supports all cryptocurrencies available on Alpaca, including:
+- `BTC`, `ETH`, `SOL`, `DOGE`, `XRP`, `ADA`, `LTC`, `BNB`, `DOT`, `AVAX`
+- `LINK`, `MATIC`, `ATOM`, `ARB`, `OP`, `BCH`, `ETC`, `NEAR`, `APT`, `TON`
+- And any other crypto pairs available on Alpaca
+
 ## Best Practices
 
 1. **Always test in paper mode first**
 2. **Monitor rate limit usage** via logs
 3. **Use limit orders** for price-sensitive strategies
 4. **Use market orders** when execution certainty is more important than price
-5. **Check market hours** before trading
+5. **Check market hours** before trading (crypto trades 24/7)
 6. **Handle partial fills** appropriately (especially with limit orders)
 7. **Log all broker errors** for debugging
 8. **Understand time_in_force** implications:
-   - Use "day" for intraday strategies
-   - Use "gtc" carefully - orders persist across days
+   - Use "day" for intraday stock strategies
+   - Use "gtc" for crypto strategies (24/7 trading)
    - Use "ioc"/"fok" for immediate execution requirements
+9. **Crypto-specific considerations**:
+   - Higher volatility requires careful position sizing
+   - Consider using limit orders to avoid slippage
+   - Monitor crypto-specific market conditions
 
 ---
 
