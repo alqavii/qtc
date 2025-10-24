@@ -207,7 +207,14 @@ class TickerAdapter:
                         limit=100000,
                         feed="iex",
                     )
-                    barset = client.get_stock_bars(req)
+                    try:
+                        barset = client.get_stock_bars(req)
+                    except Exception as e:
+                        # Log error but continue with other batches
+                        print(
+                            f"Warning: Failed to fetch data for batch {batch[:5]}...: {e}"
+                        )
+                        continue
 
                     def _iter_stock_groups(obj):
                         if hasattr(obj, "items"):
@@ -244,16 +251,21 @@ class TickerAdapter:
                             )
 
         if cc:
-            reqc = CryptoBarsRequest(
-                symbol_or_symbols=[TickerAdapter._crypto_pair(s) for s in cc],
-                timeframe=TimeFrame.Minute,  # type: ignore
-                start=start,
-                end=end,
-                limit=100000,
-            )
             crypto_client = _get_crypto_client()
             if crypto_client:
-                cbarset = crypto_client.get_crypto_bars(reqc)
+                reqc = CryptoBarsRequest(
+                    symbol_or_symbols=[TickerAdapter._crypto_pair(s) for s in cc],
+                    timeframe=TimeFrame.Minute,  # type: ignore
+                    start=start,
+                    end=end,
+                    limit=100000,
+                )
+                try:
+                    cbarset = crypto_client.get_crypto_bars(reqc)
+                except Exception as e:
+                    # Log error but continue
+                    print(f"Warning: Failed to fetch crypto data: {e}")
+                    return out
 
                 def _iter_crypto_groups(obj):
                     if hasattr(obj, "items"):

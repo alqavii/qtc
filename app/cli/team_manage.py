@@ -532,11 +532,42 @@ def backfill_data(period: str) -> None:
     from app.adapters.ticker_adapter import TickerAdapter
     from app.adapters.parquet_writer import ParquetWriter
     from app.config.settings import TICKER_UNIVERSE
+    from app.services.market_hours import us_equity_market_open
     import time
 
     print("=" * 70)
     print("  HISTORICAL DATA BACKFILL")
     print("=" * 70)
+
+    # Check if credentials are loaded (should be available from systemctl service)
+    import os
+
+    api_key = os.getenv("ALPACA_API_KEY")
+    api_secret = os.getenv("ALPACA_API_SECRET")
+
+    if not api_key or not api_secret:
+        print("WARNING: Alpaca API credentials not found!")
+        print(
+            "Make sure the orchestrator service is running or environment variables are set."
+        )
+        print("Get credentials from: https://app.alpaca.markets/")
+        response = input("Continue anyway? (yes/no): ")
+        if response.lower() not in ["yes", "y"]:
+            print("Aborted by user")
+            return
+
+    # Check if we're in market hours
+    if us_equity_market_open():
+        print("WARNING: Market is currently open!")
+        print(
+            "Backfilling during market hours may interfere with live data collection."
+        )
+        response = input("Continue anyway? (yes/no): ")
+        if response.lower() not in ["yes", "y"]:
+            print("Aborted by user")
+            return
+    else:
+        print("Market is closed - safe to proceed with backfill")
 
     # Calculate date range
     end_date = date.today()
@@ -586,7 +617,7 @@ def backfill_data(period: str) -> None:
 
     # Confirm before proceeding
     print("\n" + "=" * 70)
-    response = input("Ready to start? Ensure orchestrator is STOPPED! (yes/no): ")
+    response = input("Ready to start backfill? (yes/no): ")
     if response.lower() not in ["yes", "y"]:
         print("Aborted by user")
         return
