@@ -359,17 +359,28 @@ def _ensure_alpaca_env_loaded() -> None:
 
     Precedence:
       1) QTC_ALPACA_ENV (absolute path)
-      2) /etc/qtc-alpha/alpaca.env (Linux servers)
-      3) <repo_root>/etc/qtc-alpha/alpaca.env (dev)
+      2) /etc/qtc-api.env (Linux servers - primary)
+      3) /etc/qtc-alpha/alpaca.env (Linux servers - legacy)
+      4) <repo_root>/etc/qtc-alpha/alpaca.env (dev)
     """
     override = os.getenv("QTC_ALPACA_ENV")
     if override:
         _load_env_file(Path(override))
         return
-    sys_path = Path("/etc/qtc-alpha/alpaca.env")
-    if sys_path.exists():
-        _load_env_file(sys_path)
+
+    # Check primary location: /etc/qtc-api.env
+    sys_path_primary = Path("/etc/qtc-api.env")
+    if sys_path_primary.exists():
+        _load_env_file(sys_path_primary)
         return
+
+    # Check legacy location: /etc/qtc-alpha/alpaca.env
+    sys_path_legacy = Path("/etc/qtc-alpha/alpaca.env")
+    if sys_path_legacy.exists():
+        _load_env_file(sys_path_legacy)
+        return
+
+    # Check dev location
     repo_root = Path(__file__).resolve().parents[2]
     _load_env_file(repo_root / "etc" / "qtc-alpha" / "alpaca.env")
 

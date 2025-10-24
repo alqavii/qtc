@@ -336,6 +336,10 @@ def _manual_trade(
     from app.models.trading import TradeRequest
     from app.services.trade_executor import trade_executor
     from app.adapters.ticker_adapter import TickerAdapter
+    from app.adapters.alpaca_broker import _ensure_alpaca_env_loaded
+
+    # Load environment variables the same way the orchestrator does
+    _ensure_alpaca_env_loaded()
 
     team_id = _slugify(name_or_id)
 
@@ -533,15 +537,18 @@ def backfill_data(period: str) -> None:
     from app.adapters.parquet_writer import ParquetWriter
     from app.config.settings import TICKER_UNIVERSE
     from app.services.market_hours import us_equity_market_open
+    from app.adapters.alpaca_broker import _ensure_alpaca_env_loaded
     import time
+    import os
 
     print("=" * 70)
     print("  HISTORICAL DATA BACKFILL")
     print("=" * 70)
 
-    # Check if credentials are loaded (should be available from systemctl service)
-    import os
+    # Load environment variables the same way the orchestrator does
+    _ensure_alpaca_env_loaded()
 
+    # Check if credentials are loaded (should be available from systemctl service)
     api_key = os.getenv("ALPACA_API_KEY")
     api_secret = os.getenv("ALPACA_API_SECRET")
 
@@ -559,6 +566,7 @@ def backfill_data(period: str) -> None:
             "2. Run as orchestrator user: sudo -u <orchestrator-user> python3 -m app.cli.team_manage backfill start"
         )
         print("3. Or source the same environment file the orchestrator uses")
+        print("   Expected locations: /etc/qtc-api.env or /etc/qtc-alpha/alpaca.env")
         response = input("Continue anyway? (yes/no): ")
         if response.lower() not in ["yes", "y"]:
             print("Aborted by user")
