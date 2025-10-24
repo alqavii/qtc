@@ -212,7 +212,7 @@ class TickerAdapter:
                     except Exception as e:
                         # Log error but continue with other batches
                         print(
-                            f"Warning: Failed to fetch data for batch {batch[:5]}...: {e}"
+                            f"Warning: Failed to fetch data for batch {batch[:5]}...: {str(e)[:100]}..."
                         )
                         continue
 

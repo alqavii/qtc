@@ -551,6 +551,14 @@ def backfill_data(period: str) -> None:
             "Make sure the orchestrator service is running or environment variables are set."
         )
         print("Get credentials from: https://app.alpaca.markets/")
+        print("\nTo run with orchestrator environment:")
+        print(
+            "1. Check orchestrator environment: sudo systemctl show qtc-orchestrator.service --property=Environment"
+        )
+        print(
+            "2. Run as orchestrator user: sudo -u <orchestrator-user> python3 -m app.cli.team_manage backfill start"
+        )
+        print("3. Or source the same environment file the orchestrator uses")
         response = input("Continue anyway? (yes/no): ")
         if response.lower() not in ["yes", "y"]:
             print("Aborted by user")
