@@ -553,11 +553,11 @@ def backfill_data(period: str) -> None:
         start_date = end_date - timedelta(days=3 * 365)
         period_desc = "3 years"
     else:
-        print(f"❌ Invalid period: {period}. Use: 1y, 2y, 3y, or start")
+        print(f"ERROR Invalid period: {period}. Use: 1y, 2y, 3y, or start")
         return
 
-    print(f"\n📊 Ticker Universe: {len(TICKER_UNIVERSE)} tickers")
-    print(f"📅 Period: {period_desc} ({start_date} to {end_date})")
+    print(f"\nTicker Universe: {len(TICKER_UNIVERSE)} tickers")
+    print(f"Period: {period_desc} ({start_date} to {end_date})")
 
     # Count potential trading days
     potential_days = 0
@@ -567,7 +567,7 @@ def backfill_data(period: str) -> None:
             potential_days += 1
         check_date += timedelta(days=1)
 
-    print(f"📈 Potential trading days: ~{potential_days} days")
+    print(f"Potential trading days: ~{potential_days} days")
 
     # Estimate time and storage
     batches_per_day = (
@@ -579,19 +579,19 @@ def backfill_data(period: str) -> None:
         (potential_days * len(TICKER_UNIVERSE) * 390) / (1024**3) * 0.1
     )  # Rough estimate
 
-    print("\n⏱️  Estimates:")
+    print("\nEstimates:")
     print(f"   API calls: ~{estimated_api_calls:,}")
     print(f"   Time: ~{estimated_time_minutes:.1f} minutes")
     print(f"   Storage: ~{estimated_storage_gb:.1f} GB")
 
     # Confirm before proceeding
     print("\n" + "=" * 70)
-    response = input("⚠️  Ready to start? Ensure orchestrator is STOPPED! (yes/no): ")
+    response = input("Ready to start? Ensure orchestrator is STOPPED! (yes/no): ")
     if response.lower() not in ["yes", "y"]:
-        print("❌ Aborted by user")
+        print("Aborted by user")
         return
 
-    print("\n🚀 Starting backfill...\n")
+    print("\nStarting backfill...\n")
 
     # Track progress
     current_date = start_date
@@ -615,7 +615,7 @@ def backfill_data(period: str) -> None:
             )
 
             print(
-                f"📥 [{days_completed + 1}/{potential_days}] {current_date} ",
+                f"[{days_completed + 1}/{potential_days}] {current_date} ",
                 end="",
                 flush=True,
             )
@@ -627,11 +627,11 @@ def backfill_data(period: str) -> None:
             if bars:
                 # Write to Parquet (overwrite mode - no duplication)
                 ParquetWriter.writeDay(bars, root="data/prices/minute_bars")
-                print(f"✅ {len(bars):,} bars")
+                print(f"SUCCESS {len(bars):,} bars")
                 days_with_data += 1
                 total_bars += len(bars)
             else:
-                print("⚠️  No data (holiday/non-trading day)")
+                print("WARNING No data (holiday/non-trading day)")
 
             days_completed += 1
 
@@ -639,28 +639,28 @@ def backfill_data(period: str) -> None:
             time.sleep(0.5)
 
         except KeyboardInterrupt:
-            print("\n\n⚠️  Interrupted by user")
+            print("\n\nWARNING Interrupted by user")
             print(f"   Completed: {days_completed}/{potential_days} days")
             print("   Can resume by running again (will overwrite existing data)")
             return
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"ERROR Error: {e}")
             errors += 1
             if errors > 10:
-                print(f"\n❌ Too many errors ({errors}), stopping")
+                print(f"\nERROR Too many errors ({errors}), stopping")
                 return
 
         current_date += timedelta(days=1)
 
     # Final summary
     elapsed_total = time.time() - start_time
-    print("\n✅ Backfill completed!")
+    print("\nSUCCESS Backfill completed!")
     print(f"   Days processed: {days_completed}")
     print(f"   Days with data: {days_with_data}")
     print(f"   Total bars: {total_bars:,}")
     print(f"   Errors: {errors}")
     print(f"   Time elapsed: {elapsed_total / 60:.1f} minutes")
-    print("\n💾 Data written to: data/prices/minute_bars/")
+    print("\nData written to: data/prices/minute_bars/")
 
 
 def check_alpaca_status() -> None:

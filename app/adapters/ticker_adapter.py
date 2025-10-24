@@ -50,6 +50,9 @@ class TickerAdapter:
     consistent pricing from a single exchange source, avoiding SIP data variations.
     """
 
+    # Batch size for API requests (Alpaca limit is ~200 symbols per call)
+    BATCH_SIZE = 200
+
     _CRYPTO_SET = {
         "BTC",
         "ETH",
@@ -97,28 +100,31 @@ class TickerAdapter:
         if eq:
             client = _get_client()
             if client:
-                req = StockLatestBarRequest(symbol_or_symbols=eq, feed="iex")
-                bars = client.get_stock_latest_bar(req)
-                for ticker, bar in bars.items():
-                    if bar is None:
-                        continue
-                    ts = bar.timestamp.astimezone(ZoneInfo("America/New_York")).replace(
-                        second=0, microsecond=0
-                    )
-                    out.append(
-                        MinuteBar(
-                            ticker=ticker,
-                            timestamp=ts,
-                            open=bar.open,
-                            high=bar.high,
-                            low=bar.low,
-                            close=bar.close,
-                            volume=None,
-                            tradeCount=None,
-                            vwap=None,
-                            asOf=datetime.now(timezone.utc),
+                # Batch equity requests
+                for i in range(0, len(eq), TickerAdapter.BATCH_SIZE):
+                    batch = eq[i : i + TickerAdapter.BATCH_SIZE]
+                    req = StockLatestBarRequest(symbol_or_symbols=batch, feed="iex")
+                    bars = client.get_stock_latest_bar(req)
+                    for ticker, bar in bars.items():
+                        if bar is None:
+                            continue
+                        ts = bar.timestamp.astimezone(
+                            ZoneInfo("America/New_York")
+                        ).replace(second=0, microsecond=0)
+                        out.append(
+                            MinuteBar(
+                                ticker=ticker,
+                                timestamp=ts,
+                                open=bar.open,
+                                high=bar.high,
+                                low=bar.low,
+                                close=bar.close,
+                                volume=None,
+                                tradeCount=None,
+                                vwap=None,
+                                asOf=datetime.now(timezone.utc),
+                            )
                         )
-                    )
 
         if cc:
             crypto_client = _get_crypto_client()
@@ -188,51 +194,54 @@ class TickerAdapter:
         out: list[MinuteBar] = []
 
         if eq:
-            req = StockBarsRequest(
-                symbol_or_symbols=eq,
-                timeframe=TimeFrame.Minute,  # type: ignore
-                start=start,
-                end=end,
-                limit=100000,
-                feed="iex",
-            )
             client = _get_client()
             if client:
-                barset = client.get_stock_bars(req)
+                # Batch equity requests
+                for i in range(0, len(eq), TickerAdapter.BATCH_SIZE):
+                    batch = eq[i : i + TickerAdapter.BATCH_SIZE]
+                    req = StockBarsRequest(
+                        symbol_or_symbols=batch,
+                        timeframe=TimeFrame.Minute,  # type: ignore
+                        start=start,
+                        end=end,
+                        limit=100000,
+                        feed="iex",
+                    )
+                    barset = client.get_stock_bars(req)
 
-                def _iter_stock_groups(obj):
-                    if hasattr(obj, "items"):
-                        return obj.items()
-                    data = getattr(obj, "data", obj)
-                    groups = {}
-                    for b in data:
-                        sym = getattr(b, "symbol", None)
-                        if sym is None:
+                    def _iter_stock_groups(obj):
+                        if hasattr(obj, "items"):
+                            return obj.items()
+                        data = getattr(obj, "data", obj)
+                        groups = {}
+                        for b in data:
+                            sym = getattr(b, "symbol", None)
+                            if sym is None:
+                                continue
+                            groups.setdefault(str(sym), []).append(b)
+                        return groups.items()
+
+                    for symbol, series in _iter_stock_groups(barset):
+                        if not series:
                             continue
-                        groups.setdefault(str(sym), []).append(b)
-                    return groups.items()
-
-                for symbol, series in _iter_stock_groups(barset):
-                    if not series:
-                        continue
-                    for bar in series:
-                        ts = bar.timestamp.astimezone(eastern).replace(
-                            second=0, microsecond=0
-                        )
-                        out.append(
-                            MinuteBar(
-                                ticker=symbol,
-                                timestamp=ts,
-                                open=bar.open,
-                                high=bar.high,
-                                low=bar.low,
-                                close=bar.close,
-                                volume=getattr(bar, "volume", None),
-                                tradeCount=getattr(bar, "trade_count", None),
-                                vwap=getattr(bar, "vwap", None),
-                                asOf=datetime.now(timezone.utc),
+                        for bar in series:
+                            ts = bar.timestamp.astimezone(eastern).replace(
+                                second=0, microsecond=0
                             )
-                        )
+                            out.append(
+                                MinuteBar(
+                                    ticker=symbol,
+                                    timestamp=ts,
+                                    open=bar.open,
+                                    high=bar.high,
+                                    low=bar.low,
+                                    close=bar.close,
+                                    volume=getattr(bar, "volume", None),
+                                    tradeCount=getattr(bar, "trade_count", None),
+                                    vwap=getattr(bar, "vwap", None),
+                                    asOf=datetime.now(timezone.utc),
+                                )
+                            )
 
         if cc:
             reqc = CryptoBarsRequest(
