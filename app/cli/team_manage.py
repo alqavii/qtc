@@ -414,7 +414,6 @@ def view_all_errors(
     from app.config.environments import EnvironmentConfig
 
     config = EnvironmentConfig(os.getenv("QTC_ENV", "development"))
-    errors: List[Dict[str, Any]] = []
 
     print("=== System Error Report ===")
     print(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
@@ -523,6 +522,147 @@ def view_all_errors(
         print()
 
 
+def backfill_data(period: str) -> None:
+    """Backfill historical price data for all tickers in TICKER_UNIVERSE.
+
+    Args:
+        period: Time period to backfill ('1y', '2y', '3y', 'start' for Jan 1, 2020)
+    """
+    from datetime import date, timedelta
+    from app.adapters.ticker_adapter import TickerAdapter
+    from app.adapters.parquet_writer import ParquetWriter
+    from app.config.settings import TICKER_UNIVERSE
+    import time
+
+    print("=" * 70)
+    print("  HISTORICAL DATA BACKFILL")
+    print("=" * 70)
+
+    # Calculate date range
+    end_date = date.today()
+    if period == "start":
+        start_date = date(2020, 1, 1)
+        period_desc = "from Jan 1, 2020"
+    elif period == "1y":
+        start_date = end_date - timedelta(days=365)
+        period_desc = "1 year"
+    elif period == "2y":
+        start_date = end_date - timedelta(days=2 * 365)
+        period_desc = "2 years"
+    elif period == "3y":
+        start_date = end_date - timedelta(days=3 * 365)
+        period_desc = "3 years"
+    else:
+        print(f"❌ Invalid period: {period}. Use: 1y, 2y, 3y, or start")
+        return
+
+    print(f"\n📊 Ticker Universe: {len(TICKER_UNIVERSE)} tickers")
+    print(f"📅 Period: {period_desc} ({start_date} to {end_date})")
+
+    # Count potential trading days
+    potential_days = 0
+    check_date = start_date
+    while check_date <= end_date:
+        if check_date.weekday() < 5:  # Skip weekends
+            potential_days += 1
+        check_date += timedelta(days=1)
+
+    print(f"📈 Potential trading days: ~{potential_days} days")
+
+    # Estimate time and storage
+    batches_per_day = (
+        len(TICKER_UNIVERSE) + TickerAdapter.BATCH_SIZE - 1
+    ) // TickerAdapter.BATCH_SIZE
+    estimated_api_calls = potential_days * batches_per_day
+    estimated_time_minutes = estimated_api_calls / 150  # Conservative rate
+    estimated_storage_gb = (
+        (potential_days * len(TICKER_UNIVERSE) * 390) / (1024**3) * 0.1
+    )  # Rough estimate
+
+    print("\n⏱️  Estimates:")
+    print(f"   API calls: ~{estimated_api_calls:,}")
+    print(f"   Time: ~{estimated_time_minutes:.1f} minutes")
+    print(f"   Storage: ~{estimated_storage_gb:.1f} GB")
+
+    # Confirm before proceeding
+    print("\n" + "=" * 70)
+    response = input("⚠️  Ready to start? Ensure orchestrator is STOPPED! (yes/no): ")
+    if response.lower() not in ["yes", "y"]:
+        print("❌ Aborted by user")
+        return
+
+    print("\n🚀 Starting backfill...\n")
+
+    # Track progress
+    current_date = start_date
+    days_completed = 0
+    days_with_data = 0
+    total_bars = 0
+    errors = 0
+    start_time = time.time()
+
+    while current_date <= end_date:
+        # Skip weekends
+        if current_date.weekday() >= 5:
+            current_date += timedelta(days=1)
+            continue
+
+        try:
+            elapsed = time.time() - start_time
+            rate = days_completed / elapsed if elapsed > 0 else 0
+            eta_minutes = (
+                (potential_days - days_completed) / (rate * 60) if rate > 0 else 0
+            )
+
+            print(
+                f"📥 [{days_completed + 1}/{potential_days}] {current_date} ",
+                end="",
+                flush=True,
+            )
+            print(f"(ETA: {eta_minutes:.1f}min) ... ", end="", flush=True)
+
+            # Fetch data for this day
+            bars = TickerAdapter.fetchHistoricalDay(current_date, TICKER_UNIVERSE)
+
+            if bars:
+                # Write to Parquet (overwrite mode - no duplication)
+                ParquetWriter.writeDay(bars, root="data/prices/minute_bars")
+                print(f"✅ {len(bars):,} bars")
+                days_with_data += 1
+                total_bars += len(bars)
+            else:
+                print("⚠️  No data (holiday/non-trading day)")
+
+            days_completed += 1
+
+            # Rate limiting
+            time.sleep(0.5)
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Interrupted by user")
+            print(f"   Completed: {days_completed}/{potential_days} days")
+            print("   Can resume by running again (will overwrite existing data)")
+            return
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            errors += 1
+            if errors > 10:
+                print(f"\n❌ Too many errors ({errors}), stopping")
+                return
+
+        current_date += timedelta(days=1)
+
+    # Final summary
+    elapsed_total = time.time() - start_time
+    print("\n✅ Backfill completed!")
+    print(f"   Days processed: {days_completed}")
+    print(f"   Days with data: {days_with_data}")
+    print(f"   Total bars: {total_bars:,}")
+    print(f"   Errors: {errors}")
+    print(f"   Time elapsed: {elapsed_total / 60:.1f} minutes")
+    print("\n💾 Data written to: data/prices/minute_bars/")
+
+
 def check_alpaca_status() -> None:
     """Check Alpaca API key status and connectivity."""
     print("=== Alpaca API Status Check ===")
@@ -581,7 +721,7 @@ def check_alpaca_status() -> None:
         try:
             from app.adapters.ticker_adapter import TickerAdapter
 
-            adapter = TickerAdapter()
+            TickerAdapter()
             print("OK Market Data API: Connected")
         except Exception as e:
             print(f"ERROR Market Data API: Failed - {str(e)}")
@@ -809,8 +949,16 @@ def main() -> None:
         help="Filter errors by error type (e.g., TimeoutError, ValidationError)",
     )
 
-    as_cmd = sub.add_parser(
-        "alpacastatus", help="Check Alpaca API key status and connectivity"
+    sub.add_parser("alpacastatus", help="Check Alpaca API key status and connectivity")
+
+    # Backfill command
+    bf = sub.add_parser(
+        "backfill", help="Backfill historical price data for all tickers"
+    )
+    bf.add_argument(
+        "period",
+        choices=["1y", "2y", "3y", "start"],
+        help="Time period to backfill (1y=1 year, 2y=2 years, 3y=3 years, start=Jan 1, 2020)",
     )
 
     args = p.parse_args()
@@ -889,6 +1037,9 @@ def main() -> None:
 
     elif args.cmd == "alpacastatus":
         check_alpaca_status()
+
+    elif args.cmd == "backfill":
+        backfill_data(args.period)
 
 
 if __name__ == "__main__":

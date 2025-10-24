@@ -100,6 +100,11 @@ class QTCAlphaOrchestrator:
 
         self.data_repair_service = data_repair_service
 
+        # Initialize daily validation service
+        from app.services.daily_validation_service import daily_validation_service
+
+        self.daily_validation_service = daily_validation_service
+
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -574,6 +579,9 @@ class QTCAlphaOrchestrator:
 
             # Start data repair service (15min market hours, 60min off-hours)
             await self.data_repair_service.start()
+
+            # Start daily validation service (runs at 2 AM UTC daily)
+            await self.daily_validation_service.start_daily_scheduler()
 
             # Start the minute service
             await self.minute_service.run()
