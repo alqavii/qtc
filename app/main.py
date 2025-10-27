@@ -189,7 +189,11 @@ class QTCAlphaOrchestrator:
     async def _process_market_data(self, bars: List[MinuteBar]) -> None:
         """Process new market data and execute strategies"""
         bar_count = len(bars)
-        logger.info("Processing %s new market data bars", bar_count)
+        logger.info(
+            "Processing %s new market data bars, %s teams loaded",
+            bar_count,
+            len(self.teams),
+        )
 
         # Reconcile loaded teams with registry (supports live remove)
         self._reconcile_teams_with_registry()
@@ -259,6 +263,9 @@ class QTCAlphaOrchestrator:
             return None
 
         # Pre-trade snapshot for each team so every minute has one portfolio line
+        logger.debug(
+            f"Processing {len(self.teams)} teams, market_open={market_open_now}"
+        )
         for tid, team in self.teams.items():
             run_247 = bool(
                 team.strategy.params.get("run_24_7", False)
@@ -314,18 +321,30 @@ class QTCAlphaOrchestrator:
         # Execute strategies for each team in parallel
         tasks: List[asyncio.Task[None]] = []
         for tid, team in self.teams.items():
-            if not should_run_map.get(tid, False):
+            should_run = should_run_map.get(tid, False)
+            status = self._team_runtime_status.get(tid, {})
+            logger.debug(
+                f"Team {tid}: should_run={should_run}, run_24_7={status.get('run_24_7', False)}, market_open={status.get('market_open', False)}"
+            )
+            if not should_run:
+                logger.debug(f"Skipping team {tid} - not scheduled to run")
                 continue
+            logger.info(f"Executing strategy for team {tid}")
             tasks.append(
                 asyncio.create_task(
                     self._execute_team_strategy(team, bars, current_prices)
                 )
             )
         if tasks:
+            logger.info(f"Executing {len(tasks)} strategy tasks")
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for team, res in zip(self.teams.values(), results):
                 if isinstance(res, Exception):
                     logger.error("Strategy task error for team %s: %s", team.name, res)
+        else:
+            logger.info(
+                f"No strategy tasks to execute. Teams: {list(self.teams.keys())}, Active: {[tid for tid, should_run in should_run_map.items() if should_run]}"
+            )
 
         # Append metrics snapshot if available (post-trade)
         for tid, team in self.teams.items():
@@ -981,6 +1000,7 @@ async def run_trading_system(
     teams_config: List[Dict[str, Any]],
     duration_minutes: Optional[int] = None,
 ) -> None:
+    logger.info(f"Initializing orchestrator with {len(teams_config)} teams from config")
     orchestrator = QTCAlphaOrchestrator()
     for cfg in teams_config:
         name = cfg["team_id"]
@@ -1000,11 +1020,17 @@ async def run_trading_system(
             _am.generateKey(name)
         except Exception:
             pass
+        logger.info(
+            f"Created team: {name} with {len(orchestrator.teams)} total teams now loaded"
+        )
         print(
             f"Created team: {name} with strategy {entry_point} at {repo_path} and ${initial_cash} initial capital"
         )
 
         orchestrator._reconcile_teams_with_registry()
+    logger.info(
+        f"Orchestrator started with {len(orchestrator.teams)} teams: {list(orchestrator.teams.keys())}"
+    )
     print("Press Ctrl+C to stop gracefully")
     try:
         if duration_minutes:

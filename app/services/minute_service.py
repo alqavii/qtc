@@ -105,7 +105,7 @@ class MinuteService:
             bars: List[MinuteBar] = list(bars_iter or [])
             logger.debug(f"Fetched {len(bars)} bars")
             if not bars:
-                # No fresh data; attempt fallback and notify orchestrator
+                # No fresh data; attempt fallback
                 try:
                     if (
                         self._historical_fetch_day is not None
@@ -118,7 +118,12 @@ class MinuteService:
                             await self._call(self._write_day, hist_bars)
                 except Exception as exc:
                     logger.warning("Minute fallback fetch failed: %s", exc)
+
+                # STILL call post_hook with empty list - orchestrator needs to update portfolios even with stale data
                 if self._post is not None:
+                    logger.debug(
+                        f"Calling post_hook with {len(bars)} bars (no new data)"
+                    )
                     await self._call(self._post, [])
                 return
 
