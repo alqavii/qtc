@@ -100,8 +100,10 @@ class MinuteService:
     async def _on_minute(self, as_of: datetime) -> None:
         try:
             # Fetch latest bars
+            logger.debug(f"Fetching bars for {as_of}")
             bars_iter = await self._call(self._fetch)
             bars: List[MinuteBar] = list(bars_iter or [])
+            logger.debug(f"Fetched {len(bars)} bars")
             if not bars:
                 # No fresh data; attempt fallback and notify orchestrator
                 try:
@@ -128,10 +130,12 @@ class MinuteService:
 
             # Persist
             await self._call(self._write, bars)
+            logger.debug(f"Persisted {len(bars)} bars to parquet")
 
             # Optional downstream hook
             if self._post is not None:
                 await self._call(self._post, bars)
+                logger.debug(f"Triggered post_hook with {len(bars)} bars")
 
             # Daily backfill of previous day once per UTC day
             if self._historical_fetch_day is not None and self._write_day is not None:

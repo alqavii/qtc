@@ -38,16 +38,32 @@ _crypto_client = None
 def _get_client():
     """Get or create the Alpaca stock client."""
     global _client
-    if _client is None and _ALPACA_KEY and _ALPACA_SECRET:
-        _client = StockHistoricalDataClient(_ALPACA_KEY, _ALPACA_SECRET)
+    if _client is None:
+        if _ALPACA_KEY and _ALPACA_SECRET:
+            try:
+                _client = StockHistoricalDataClient(_ALPACA_KEY, _ALPACA_SECRET)
+                print("✓ Alpaca stock client initialized successfully")
+            except Exception as e:
+                print(f"✗ Error initializing Alpaca stock client: {e}")
+                return None
+        else:
+            print("✗ Alpaca stock client: No credentials available")
     return _client
 
 
 def _get_crypto_client():
     """Get or create the Alpaca crypto client."""
     global _crypto_client
-    if _crypto_client is None and _ALPACA_KEY and _ALPACA_SECRET:
-        _crypto_client = CryptoHistoricalDataClient(_ALPACA_KEY, _ALPACA_SECRET)
+    if _crypto_client is None:
+        if _ALPACA_KEY and _ALPACA_SECRET:
+            try:
+                _crypto_client = CryptoHistoricalDataClient(_ALPACA_KEY, _ALPACA_SECRET)
+                print("✓ Alpaca crypto client initialized successfully")
+            except Exception as e:
+                print(f"✗ Error initializing Alpaca crypto client: {e}")
+                return None
+        else:
+            print("✗ Alpaca crypto client: No credentials available")
     return _crypto_client
 
 
@@ -109,60 +125,74 @@ class TickerAdapter:
         if eq:
             client = _get_client()
             if client:
-                # Batch equity requests
-                for i in range(0, len(eq), TickerAdapter.BATCH_SIZE):
-                    batch = eq[i : i + TickerAdapter.BATCH_SIZE]
-                    req = StockLatestBarRequest(symbol_or_symbols=batch, feed="iex")
-                    bars = client.get_stock_latest_bar(req)
-                    for ticker, bar in bars.items():
+                try:
+                    # Batch equity requests
+                    for i in range(0, len(eq), TickerAdapter.BATCH_SIZE):
+                        batch = eq[i : i + TickerAdapter.BATCH_SIZE]
+                        req = StockLatestBarRequest(symbol_or_symbols=batch, feed="iex")
+                        bars = client.get_stock_latest_bar(req)
+                        for ticker, bar in bars.items():
+                            if bar is None:
+                                continue
+                            ts = bar.timestamp.astimezone(
+                                ZoneInfo("America/New_York")
+                            ).replace(second=0, microsecond=0)
+                            out.append(
+                                MinuteBar(
+                                    ticker=ticker,
+                                    timestamp=ts,
+                                    open=bar.open,
+                                    high=bar.high,
+                                    low=bar.low,
+                                    close=bar.close,
+                                    volume=None,
+                                    tradeCount=None,
+                                    vwap=None,
+                                    asOf=datetime.now(timezone.utc),
+                                )
+                            )
+                except Exception as e:
+                    print(f"Error fetching stock bars: {e}")
+            else:
+                print(
+                    "WARNING: Alpaca stock client not initialized - no credentials available"
+                )
+
+        if cc:
+            crypto_client = _get_crypto_client()
+            if crypto_client:
+                try:
+                    reqc = CryptoLatestBarRequest(
+                        symbol_or_symbols=[TickerAdapter._crypto_pair(s) for s in cc]
+                    )
+                    cbars = crypto_client.get_crypto_latest_bar(reqc)
+                    for pair, bar in cbars.items():
                         if bar is None:
                             continue
+                        sym = pair.split("/")[0]
                         ts = bar.timestamp.astimezone(
                             ZoneInfo("America/New_York")
                         ).replace(second=0, microsecond=0)
                         out.append(
                             MinuteBar(
-                                ticker=ticker,
+                                ticker=sym,
                                 timestamp=ts,
                                 open=bar.open,
                                 high=bar.high,
                                 low=bar.low,
                                 close=bar.close,
-                                volume=None,
-                                tradeCount=None,
-                                vwap=None,
+                                volume=getattr(bar, "volume", None),
+                                tradeCount=getattr(bar, "trade_count", None),
+                                vwap=getattr(bar, "vwap", None),
                                 asOf=datetime.now(timezone.utc),
                             )
                         )
-
-        if cc:
-            crypto_client = _get_crypto_client()
-            if crypto_client:
-                reqc = CryptoLatestBarRequest(
-                    symbol_or_symbols=[TickerAdapter._crypto_pair(s) for s in cc]
+                except Exception as e:
+                    print(f"Error fetching crypto bars: {e}")
+            else:
+                print(
+                    "WARNING: Alpaca crypto client not initialized - no credentials available"
                 )
-                cbars = crypto_client.get_crypto_latest_bar(reqc)
-                for pair, bar in cbars.items():
-                    if bar is None:
-                        continue
-                    sym = pair.split("/")[0]
-                    ts = bar.timestamp.astimezone(ZoneInfo("America/New_York")).replace(
-                        second=0, microsecond=0
-                    )
-                    out.append(
-                        MinuteBar(
-                            ticker=sym,
-                            timestamp=ts,
-                            open=bar.open,
-                            high=bar.high,
-                            low=bar.low,
-                            close=bar.close,
-                            volume=getattr(bar, "volume", None),
-                            tradeCount=getattr(bar, "trade_count", None),
-                            vwap=getattr(bar, "vwap", None),
-                            asOf=datetime.now(timezone.utc),
-                        )
-                    )
 
         return out
 
