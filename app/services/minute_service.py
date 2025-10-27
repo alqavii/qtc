@@ -105,19 +105,10 @@ class MinuteService:
             bars: List[MinuteBar] = list(bars_iter or [])
             logger.debug(f"Fetched {len(bars)} bars")
             if not bars:
-                # No fresh data; attempt fallback
-                try:
-                    if (
-                        self._historical_fetch_day is not None
-                        and self._write_day is not None
-                    ):
-                        today = as_of.date()
-                        hist_iter = await self._call(self._historical_fetch_day, today)
-                        hist_bars: List[MinuteBar] = list(hist_iter or [])
-                        if hist_bars:
-                            await self._call(self._write_day, hist_bars)
-                except Exception as exc:
-                    logger.warning("Minute fallback fetch failed: %s", exc)
+                # No fresh data available - this is normal when market is closed or before 9:30 AM
+                # Don't try to fetch historical data here as it blocks the loop
+                # The data repair service handles backfilling
+                logger.debug(f"No bars available for {as_of} - market likely closed")
 
                 # STILL call post_hook with empty list - orchestrator needs to update portfolios even with stale data
                 if self._post is not None:
@@ -143,20 +134,34 @@ class MinuteService:
                 logger.debug(f"Triggered post_hook with {len(bars)} bars")
 
             # Daily backfill of previous day once per UTC day
+            # Do this in background to avoid blocking the minute loop
             if self._historical_fetch_day is not None and self._write_day is not None:
                 today = as_of.date()
                 if self._last_fix_day is None or self._last_fix_day != today:
-                    prev = today - timedelta(days=1)
-                    try:
-                        hist_iter = await self._call(self._historical_fetch_day, prev)
-                        hist_bars: List[MinuteBar] = list(hist_iter or [])
-                        if hist_bars:
-                            await self._call(self._write_day, hist_bars)
-                            self._last_fix_day = today
-                    except Exception:
-                        logger.exception("[minute-service] daily fix error")
+                    # Schedule backfill to run in background without blocking
+                    asyncio.create_task(self._background_backfill(today))
         except Exception:
             logger.exception("[minute-service] error during minute tick")
+
+    async def _background_backfill(self, today: date) -> None:
+        """Run backfill in background to avoid blocking minute loop."""
+        try:
+            logger.info(
+                f"[minute-service] Starting background backfill for {today - timedelta(days=1)}"
+            )
+            prev = today - timedelta(days=1)
+            hist_iter = await self._call(self._historical_fetch_day, prev)
+            hist_bars: List[MinuteBar] = list(hist_iter or [])
+            if hist_bars:
+                await self._call(self._write_day, hist_bars)
+                self._last_fix_day = today
+                logger.info(
+                    f"[minute-service] Completed background backfill: {len(hist_bars)} bars"
+                )
+            else:
+                logger.warning(f"[minute-service] No historical data found for {prev}")
+        except Exception as e:
+            logger.exception(f"[minute-service] Background backfill error: {e}")
 
     async def run(self) -> None:
         # Kick an immediate fetch/write on start so users see data without waiting
