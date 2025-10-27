@@ -710,6 +710,31 @@ def backfill_data(period: str) -> None:
     print("\nData written to: data/prices/minute_bars/")
 
 
+def toggle_auto_repair(enabled: bool) -> None:
+    """Toggle automatic data repair and backfill services on/off."""
+    import yaml
+
+    # Store setting in a config file
+    config_path = DATA_DIR / "qtc_config.yaml"
+
+    # Load existing config
+    if config_path.exists():
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    else:
+        config = {}
+
+    # Update setting
+    config["auto_repair_enabled"] = enabled
+
+    # Save config
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    status = "enabled" if enabled else "disabled"
+    print(f"✓ Auto-repair services are now {status}")
+    print("  (Restart orchestrator for changes to take effect)")
+
+
 def check_alpaca_status() -> None:
     """Check Alpaca API key status and connectivity."""
     print("=== Alpaca API Status Check ===")
@@ -1008,6 +1033,16 @@ def main() -> None:
         help="Time period to backfill (1y=1 year, 2y=2 years, 3y=3 years, start=Jan 1, 2020)",
     )
 
+    # Auto-repair toggle command
+    ar = sub.add_parser(
+        "autorepair", help="Enable/disable automatic data repair and backfill services"
+    )
+    ar.add_argument(
+        "enabled",
+        choices=["true", "false"],
+        help="Enable (true) or disable (false) auto repair services",
+    )
+
     args = p.parse_args()
     if args.cmd == "viewteams":
         view_teams()
@@ -1087,6 +1122,9 @@ def main() -> None:
 
     elif args.cmd == "backfill":
         backfill_data(args.period)
+
+    elif args.cmd == "autorepair":
+        toggle_auto_repair(args.enabled == "true")
 
 
 if __name__ == "__main__":

@@ -639,11 +639,30 @@ class QTCAlphaOrchestrator:
                 self._reconcile_orders_loop()
             )
 
-            # Start data repair service (15min market hours, 60min off-hours)
-            await self.data_repair_service.start()
+            # Check if auto-repair is enabled
+            auto_repair_enabled = True  # default to enabled
+            config_path = Path("data/qtc_config.yaml")
+            if config_path.exists():
+                try:
+                    import yaml
 
-            # Start daily validation service (runs at 2 AM UTC daily)
-            await self.daily_validation_service.start_daily_scheduler()
+                    config = (
+                        yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                    )
+                    auto_repair_enabled = config.get("auto_repair_enabled", True)
+                except Exception as e:
+                    logger.warning(f"Failed to load config: {e}, defaulting to enabled")
+
+            if auto_repair_enabled:
+                logger.info("Auto-repair services: ENABLED")
+                # Start data repair service (15min market hours, 60min off-hours)
+                await self.data_repair_service.start()
+                # Start daily validation service (runs at 2 AM UTC daily)
+                await self.daily_validation_service.start_daily_scheduler()
+            else:
+                logger.info(
+                    "Auto-repair services: DISABLED (controlled by autorepair CLI command)"
+                )
 
             # Start the minute service
             await self.minute_service.run()
