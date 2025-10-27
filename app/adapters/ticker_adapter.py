@@ -18,8 +18,17 @@ from alpaca.data.timeframe import TimeFrame
 import os
 
 _ensure_alpaca_env_loaded()
-_ALPACA_KEY = os.getenv("ALPACA_API_KEY")
-_ALPACA_SECRET = os.getenv("ALPACA_API_SECRET")
+# Support multiple naming conventions
+_ALPACA_KEY = (
+    os.getenv("ALPACA_API_KEY")
+    or os.getenv("ALPACA_KEY")
+    or os.getenv("APCA_API_KEY_ID")
+)
+_ALPACA_SECRET = (
+    os.getenv("ALPACA_API_SECRET")
+    or os.getenv("ALPACA_SECRET")
+    or os.getenv("APCA_API_SECRET_KEY")
+)
 
 # Lazy initialization of clients to avoid errors when credentials are not set
 _client = None

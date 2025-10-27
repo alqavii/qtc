@@ -62,7 +62,8 @@ class MinuteService:
     def __init__(
         self,
         *,
-        fetch: Callable[[], Iterable[MinuteBar]] | Callable[[], Awaitable[Iterable[MinuteBar]]],
+        fetch: Callable[[], Iterable[MinuteBar]]
+        | Callable[[], Awaitable[Iterable[MinuteBar]]],
         write: Callable[[Iterable[MinuteBar]], object]
         | Callable[[Iterable[MinuteBar]], Awaitable[object]],
         post_hook: Optional[
@@ -104,7 +105,10 @@ class MinuteService:
             if not bars:
                 # No fresh data; attempt fallback and notify orchestrator
                 try:
-                    if self._historical_fetch_day is not None and self._write_day is not None:
+                    if (
+                        self._historical_fetch_day is not None
+                        and self._write_day is not None
+                    ):
                         today = as_of.date()
                         hist_iter = await self._call(self._historical_fetch_day, today)
                         hist_bars: List[MinuteBar] = list(hist_iter or [])
@@ -115,21 +119,12 @@ class MinuteService:
                 if self._post is not None:
                     await self._call(self._post, [])
                 return
-                # Fallback: intraday backfill for today if available
-                try:
-                    if self._historical_fetch_day is not None and self._write_day is not None:
-                        today = as_of.date()
-                        hist_iter = await self._call(self._historical_fetch_day, today)
-                        hist_bars: List[MinuteBar] = list(hist_iter or [])
-                        if hist_bars:
-                            await self._call(self._write_day, hist_bars)
-                except Exception:
-                    pass
-                return
 
             # Ensure all timestamps align to the tick minute
             for b in bars:
-                b.timestamp = b.timestamp.replace(second=0, microsecond=0, tzinfo=timezone.utc)
+                b.timestamp = b.timestamp.replace(
+                    second=0, microsecond=0, tzinfo=timezone.utc
+                )
 
             # Persist
             await self._call(self._write, bars)
@@ -149,14 +144,16 @@ class MinuteService:
                         if hist_bars:
                             await self._call(self._write_day, hist_bars)
                             self._last_fix_day = today
-                    except Exception as e:
+                    except Exception:
                         logger.exception("[minute-service] daily fix error")
-        except Exception as e:
+        except Exception:
             logger.exception("[minute-service] error during minute tick")
 
     async def run(self) -> None:
         # Kick an immediate fetch/write on start so users see data without waiting
-        await self._on_minute(datetime.now(timezone.utc).replace(second=0, microsecond=0))
+        await self._on_minute(
+            datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        )
         await self._clock.run()
 
     async def stop(self) -> None:

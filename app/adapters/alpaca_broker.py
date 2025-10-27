@@ -387,8 +387,17 @@ def _ensure_alpaca_env_loaded() -> None:
 
 def load_broker_from_env() -> Optional[AlpacaBroker]:
     _ensure_alpaca_env_loaded()
-    key = os.getenv("ALPACA_API_KEY")
-    secret = os.getenv("ALPACA_API_SECRET")
+    # Support multiple naming conventions
+    key = (
+        os.getenv("ALPACA_API_KEY")
+        or os.getenv("ALPACA_KEY")
+        or os.getenv("APCA_API_KEY_ID")
+    )
+    secret = (
+        os.getenv("ALPACA_API_SECRET")
+        or os.getenv("ALPACA_SECRET")
+        or os.getenv("APCA_API_SECRET_KEY")
+    )
     if not key or not secret:
         return None
     paper = os.getenv("ALPACA_PAPER", "true").lower() in ("1", "true", "yes")

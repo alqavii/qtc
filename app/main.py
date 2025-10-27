@@ -105,9 +105,52 @@ class QTCAlphaOrchestrator:
 
         self.daily_validation_service = daily_validation_service
 
+        # Validate environment variables and log status
+        self._validate_environment()
+
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+
+    def _validate_environment(self) -> None:
+        """Validate environment variables are loaded and log status once."""
+        from app.telemetry import record_activity
+
+        key = (
+            os.getenv("ALPACA_API_KEY")
+            or os.getenv("ALPACA_KEY")
+            or os.getenv("APCA_API_KEY_ID")
+        )
+        secret = (
+            os.getenv("ALPACA_API_SECRET")
+            or os.getenv("ALPACA_SECRET")
+            or os.getenv("APCA_API_SECRET_KEY")
+        )
+
+        if key and secret:
+            # Log which env vars were found (without exposing values)
+            env_vars_used = []
+            if os.getenv("ALPACA_KEY"):
+                env_vars_used.append("ALPACA_KEY")
+            elif os.getenv("ALPACA_API_KEY"):
+                env_vars_used.append("ALPACA_API_KEY")
+            elif os.getenv("APCA_API_KEY_ID"):
+                env_vars_used.append("APCA_API_KEY_ID")
+
+            if os.getenv("ALPACA_SECRET"):
+                env_vars_used.append("ALPACA_SECRET")
+            elif os.getenv("ALPACA_API_SECRET"):
+                env_vars_used.append("ALPACA_API_SECRET")
+            elif os.getenv("APCA_API_SECRET_KEY"):
+                env_vars_used.append("APCA_API_SECRET_KEY")
+
+            record_activity(f"Environment variables loaded: {', '.join(env_vars_used)}")
+            logger.info("Environment variables loaded successfully")
+        else:
+            record_activity("WARNING: Alpaca API credentials not found in environment")
+            logger.warning(
+                "Alpaca API credentials not found - API features will be disabled"
+            )
 
     def _signal_handler(self, signum: int, frame: Optional[object]) -> None:
         """Handle shutdown signals gracefully"""
