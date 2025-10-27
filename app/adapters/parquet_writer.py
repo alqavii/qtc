@@ -59,15 +59,25 @@ class ParquetWriter:
                 # If we can't read existing file, proceed with append
                 pass
 
-        # Append new data
+        # Append new data (or create file if it doesn't exist)
         if not df.empty:
-            df.to_parquet(
-                outpath,
-                engine="fastparquet",
-                compression="snappy",
-                append=True,
-                index=False,
-            )
+            if outpath.exists():
+                df.to_parquet(
+                    outpath,
+                    engine="fastparquet",
+                    compression="snappy",
+                    append=True,
+                    index=False,
+                )
+            else:
+                # File doesn't exist, create it without append mode
+                df.to_parquet(
+                    outpath,
+                    engine="fastparquet",
+                    compression="snappy",
+                    append=False,
+                    index=False,
+                )
 
     def close(self) -> None:
         if self._writer is not None:
@@ -133,15 +143,25 @@ class ParquetWriter:
                 # If we can't read existing file, proceed with write
                 pass
 
-        # Write new data
+        # Write new data (or create file if it doesn't exist)
         if not df.empty:
-            df.to_parquet(
-                outpath,
-                engine="fastparquet",
-                compression="snappy",
-                append=True,
-                index=False,
-            )
+            if outpath.exists():
+                df.to_parquet(
+                    outpath,
+                    engine="fastparquet",
+                    compression="snappy",
+                    append=True,
+                    index=False,
+                )
+            else:
+                # File doesn't exist, create it without append mode
+                df.to_parquet(
+                    outpath,
+                    engine="fastparquet",
+                    compression="snappy",
+                    append=False,
+                    index=False,
+                )
 
 
 # Simple module-level facade to match legacy usage
