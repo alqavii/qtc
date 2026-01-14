@@ -7,6 +7,12 @@ import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from app.config.environments import config
+from app.config.settings import (
+    MAX_SINGLE_FILE_SIZE,
+    MAX_ZIP_FILE_SIZE,
+    MAX_TOTAL_EXTRACTED_SIZE,
+    DEFAULT_RATE_LIMIT,
+)
 from app.services.auth import auth_manager
 from app.telemetry import get_recent_activity_entries, subscribe_activity
 import shutil
@@ -24,14 +30,9 @@ from slowapi.errors import RateLimitExceeded
 app = FastAPI(title="QTC Alpha API", version="1.0")
 
 # Configure rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMIT])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# File size limits (in bytes)
-MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-MAX_TOTAL_EXTRACTED_SIZE = 100 * 1024 * 1024  # 100 MB total extracted
 
 # Enable simple, safe CORS so the frontend can fetch from browsers
 app.add_middleware(

@@ -27,6 +27,8 @@ from app.performance.performance_tracker import performance_tracker
 from app.config.environments import EnvironmentConfig
 from app.telemetry.error_handler import error_handler_instance
 from app.telemetry.logging_config import configure_logging
+from app.config.paths import REPO_ROOT, STRATEGY_ROOT, REGISTRY_PATH
+from app.core.registry import load_teams_from_registry, prepare_strategy_workspace
 
 # Removed git_fetch import - strategies now uploaded via web interface
 from app.services.data_api import StrategyDataAPI
@@ -795,100 +797,6 @@ class QTCAlphaOrchestrator:
         return {tid: self.get_team_metrics(tid) for tid in self.teams.keys()}
 
 
-class PerformanceTracker:
-    """Tracks and reports performance metrics"""
-
-    def __init__(self) -> None:
-        self.performance_history: List[Dict[str, Any]] = []
-        self.start_time = datetime.now(timezone.utc)
-
-    def update_performance(
-        self, teams: Dict[str, Team], current_prices: Dict[str, Decimal]
-    ) -> None:
-        """Update performance metrics for all teams"""
-        timestamp = datetime.now(timezone.utc)
-
-        for team_id, team in teams.items():
-            portfolio_value = team.portfolio.marketValue(current_prices)
-
-            performance_record = {
-                "timestamp": timestamp,
-                "team_id": team_id,
-                "team_name": team.name,
-                "portfolio_value": float(portfolio_value),
-                "cash": float(team.portfolio.freeCash),
-                "positions": {
-                    symbol: {
-                        "quantity": float(pos.quantity),
-                        "value": float(
-                            pos.quantity * current_prices.get(symbol, Decimal("0"))
-                        ),
-                        "side": pos.side,
-                    }
-                    for symbol, pos in team.portfolio.positions.items()
-                    if symbol in current_prices
-                },
-            }
-
-            self.performance_history.append(performance_record)
-
-    def save_final_report(self) -> None:
-        """Save final performance report"""
-        if not self.performance_history:
-            return
-
-        # Calculate summary statistics
-        end_time = datetime.now(timezone.utc)
-        duration = end_time - self.start_time
-
-        # Group by team
-        teams_summary = {}
-        for record in self.performance_history:
-            team_id = record["team_id"]
-            if team_id not in teams_summary:
-                teams_summary[team_id] = {
-                    "team_name": record["team_name"],
-                    "initial_value": record["portfolio_value"],
-                    "final_value": record["portfolio_value"],
-                    "max_value": record["portfolio_value"],
-                    "min_value": record["portfolio_value"],
-                    "records": [],
-                }
-
-            teams_summary[team_id]["records"].append(record)
-            teams_summary[team_id]["final_value"] = record["portfolio_value"]
-            teams_summary[team_id]["max_value"] = max(
-                teams_summary[team_id]["max_value"], record["portfolio_value"]
-            )
-            teams_summary[team_id]["min_value"] = min(
-                teams_summary[team_id]["min_value"], record["portfolio_value"]
-            )
-
-        # Calculate returns and drawdowns
-        for team_id, summary in teams_summary.items():
-            initial = summary["initial_value"]
-            final = summary["final_value"]
-            max_val = summary["max_value"]
-            min_val = summary["min_value"]
-
-            summary["total_return"] = (final - initial) / initial if initial > 0 else 0
-            summary["max_drawdown"] = (
-                (max_val - min_val) / max_val if max_val > 0 else 0
-            )
-            summary["duration_hours"] = duration.total_seconds() / 3600
-
-        # Save to file
-        report = {
-            "start_time": self.start_time.isoformat(),
-            "end_time": end_time.isoformat(),
-            "duration_hours": duration.total_seconds() / 3600,
-            "teams_summary": teams_summary,
-        }
-
-        cache_manager.save_to_disk(report, "final_performance_report")
-        logger.info("Final performance report saved")
-
-
 # ----- CLI helpers (merged from run.py) -----
 
 
@@ -899,120 +807,6 @@ def setup_environment(env: str) -> None:
     print(f"Log level: {config.get('log_level')}")
     print(f"Max position size: {config.get('max_position_size')}")
     print(f"Max daily trades: {config.get('max_daily_trades')}")
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-STRATEGY_ROOT = REPO_ROOT / "external_strategies"
-
-
-def _prepare_strategy_workspace(team_id: str, source: Path) -> Path:
-    STRATEGY_ROOT.mkdir(parents=True, exist_ok=True)
-    dest = STRATEGY_ROOT / team_id
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-
-    source = source.resolve()
-    if source.is_file():
-        candidate = source if source.name == "strategy.py" else None
-    else:
-        candidate = source / "strategy.py"
-        if not candidate.exists():
-            matches = list(source.rglob("strategy.py"))
-            candidate = matches[0] if matches else None
-
-    if candidate is None:
-        raise FileNotFoundError(f"strategy.py not found in {source}")
-
-    shutil.copy2(candidate, dest / "strategy.py")
-    return dest
-
-
-def _load_teams_from_registry(
-    registry_path: str, do_sync: bool
-) -> List[Dict[str, Any]]:
-    reg = yaml.safe_load(Path(registry_path).read_text(encoding="utf-8")) or {}
-    teams: List[Dict[str, Any]] = reg.get("teams", []) or []
-    out: List[Dict[str, Any]] = []
-
-    # BEFORE:
-    # results: Dict[str, Dict[str, Any]] = {}
-    # if do_sync and any("git_url" in t for t in teams):
-    #     results = sync_all_from_registry(registry_path)
-
-    for item in teams:
-        raw_name = item.get("team_id") or item.get("name") or "team"
-        name = slugify(raw_name)
-        entry_point = item.get("entry_point", "strategy:Strategy")
-        cash = Decimal(str(item.get("initial_cash", "10000")))
-        run_24_7 = bool(item.get("run_24_7", False))
-        params = item.get("params", {}) or {}
-
-        repo_dir: Optional[Path] = None
-
-        # Only use repo_dir from registry - no Git fetching
-        repo_val = item.get("repo_dir")
-        if repo_val:
-            repo_dir = Path(repo_val)
-        else:
-            # Check if strategy exists in external_strategies from web upload
-            web_strategy_path = STRATEGY_ROOT / name
-            if (
-                web_strategy_path.exists()
-                and (web_strategy_path / "strategy.py").exists()
-            ):
-                repo_dir = web_strategy_path
-                print(f"Using web-uploaded strategy for team {name}")
-            else:
-                print(
-                    f"No strategy found for team {name}, will use default empty strategy"
-                )
-                # Set repo_dir to None - the orchestrator will use default strategy
-                repo_dir = None
-
-        try:
-            # If repo_dir already points to external_strategies/<team_id>, do not
-            # re-prepare (which would delete the folder we just synced). Just use it.
-            use_repo = repo_dir
-
-            if use_repo is None:
-                # No strategy found - will use default empty strategy
-                stable = None
-            else:
-                try:
-                    strat_root = STRATEGY_ROOT.resolve()
-                    if use_repo.resolve().is_dir() and (
-                        use_repo.resolve() == (strat_root / name).resolve()
-                    ):
-                        if not (use_repo / "strategy.py").exists():
-                            raise FileNotFoundError(
-                                f"strategy.py not found in {use_repo}"
-                            )
-                        stable = use_repo
-                    else:
-                        stable = _prepare_strategy_workspace(name, use_repo)
-                except Exception:
-                    # Fallback to prepare workspace if any path resolution check fails
-                    stable = _prepare_strategy_workspace(name, use_repo)
-        except Exception as exc:
-            print(f"Skipping team {name}: could not prepare strategy ({exc})")
-            continue
-
-        combined_params = dict(params)
-        combined_params.setdefault("run_24_7", run_24_7)
-
-        out.append(
-            {
-                "team_id": name,
-                "repo_dir": str(stable) if stable else None,
-                "entry_point": entry_point,
-                "initial_cash": cash,
-                "params": combined_params,
-                "run_24_7": run_24_7,
-            }
-        )
-
-    return out
 
 
 async def run_trading_system(
@@ -1136,7 +930,7 @@ def main() -> None:
         print("team_registry.yaml not found in repository root. Please add your teams.")
         sys.exit(1)
     print(f"Loading teams from {default_registry} and syncing repos...")
-    teams_config: List[Dict[str, Any]] = _load_teams_from_registry(
+    teams_config: List[Dict[str, Any]] = load_teams_from_registry(
         str(default_registry), do_sync=True
     )
     if not teams_config:
