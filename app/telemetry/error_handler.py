@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import os
@@ -30,7 +30,9 @@ class ErrorHandler:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
             self._ensure_file_handler()
 
-    def handle_data_error(self, error: Exception, *, data_type: Optional[str] = None) -> None:
+    def handle_data_error(
+        self, error: Exception, *, data_type: Optional[str] = None
+    ) -> None:
         self._record("data", error, {"data_type": data_type} if data_type else None)
 
     def handle_strategy_error(
@@ -45,7 +47,9 @@ class ErrorHandler:
             context["team_id"] = team_id
         self._record("strategy", error, context)
 
-    def handle_system_error(self, error: Exception, *, component: Optional[str] = None) -> None:
+    def handle_system_error(
+        self, error: Exception, *, component: Optional[str] = None
+    ) -> None:
         context = {"component": component} if component else None
         self._record("system", error, context)
 
@@ -57,7 +61,9 @@ class ErrorHandler:
             "recent_errors": recent,
         }
 
-    def _record(self, category: str, error: Exception, context: Optional[Dict[str, Any]]) -> None:
+    def _record(
+        self, category: str, error: Exception, context: Optional[Dict[str, Any]]
+    ) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "category": category,

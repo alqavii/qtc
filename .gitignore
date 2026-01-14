@@ -15,3 +15,5 @@ risk/
 settings.py
 .strategy_sync_state.json
 team_registry.yaml
+*tmpclaude*-cwd
+
