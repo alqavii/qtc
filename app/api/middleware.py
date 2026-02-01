@@ -1,7 +1,7 @@
 """
 API Middleware components.
 
-Provides request-level utilities like request ID tracking.
+Provides request-level utilities like request ID tracking and rate limiting.
 """
 
 import time
@@ -10,8 +10,37 @@ import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from slowapi.util import get_remote_address
 
 logger = logging.getLogger(__name__)
+
+
+def get_rate_limit_key(request: Request) -> str:
+    """
+    Extract rate limiting key from request.
+    
+    Priority:
+    1. API key from query parameter 'key'
+    2. API key from Authorization header (Bearer token)
+    3. Fall back to remote IP address
+    
+    This allows per-key rate limiting for authenticated requests,
+    while still protecting against unauthenticated abuse by IP.
+    """
+    # Try query parameter first (most common in this API)
+    key = request.query_params.get("key")
+    if key:
+        return f"key:{key[:16]}"  # Use prefix to avoid logging full key
+    
+    # Try Authorization header
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return f"key:{token[:16]}"
+    
+    # Fall back to IP address
+    return f"ip:{get_remote_address(request)}"
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):

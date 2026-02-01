@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.middleware import RequestIDMiddleware
+from app.api.middleware import RequestIDMiddleware, get_rate_limit_key
 from typing import Dict, Any, Optional, List
 import asyncio
 import threading
@@ -24,14 +24,13 @@ import json
 
 # Rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 
 app = FastAPI(title="QTC Alpha API", version="1.0")
 
-# Configure rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMIT])
+# Configure rate limiter (uses API key if present, falls back to IP)
+limiter = Limiter(key_func=get_rate_limit_key, default_limits=[DEFAULT_RATE_LIMIT])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
