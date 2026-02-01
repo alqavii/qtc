@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, Query, File, UploadFile, Form
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.middleware import RequestIDMiddleware
 from typing import Dict, Any, Optional, List
 import asyncio
 import threading
@@ -42,6 +43,9 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# Request ID and timing middleware
+app.add_middleware(RequestIDMiddleware)
 
 
 def _tail_jsonl(path: Path) -> Optional[Dict[str, Any]]:
