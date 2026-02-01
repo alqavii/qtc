@@ -58,7 +58,7 @@ curl "https://your-domain.com/api/v1/market-data/AAPL/range?start=2025-01-15T09:
 ```
 
 ### 📖 Complete Trader Guide
-For detailed information on strategy development, data access patterns, order construction, and system architecture, see the **[TRADER_HANDBOOK.md](TRADER_HANDBOOK.md)**.
+For detailed information on strategy development, data access patterns, order construction, and system architecture, see the **[Trader Handbook](docs/guides/trader-handbook.md)**.
 
 ---
 
@@ -66,10 +66,10 @@ For detailed information on strategy development, data access patterns, order co
 
 **New to QTC Alpha?** Start here:
 
-- **[DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)** - Quick reference to all documentation
-- **[SYSTEM_DOCUMENTATION.md](SYSTEM_DOCUMENTATION.md)** - Complete system guide with FAQ (rate limits, latency, etc.)
-- **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** - REST API reference with examples
-- **[strategy_starter/README.md](strategy_starter/README.md)** - Strategy development guide
+- **[docs/README.md](docs/README.md)** - Quick reference to all documentation
+- **[docs/api/README.md](docs/api/README.md)** - REST API reference with examples
+- **[docs/guides/](docs/guides/)** - Strategy development guides
+- **[starter_kit/](starter_kit/)** - Strategy quickstart template
 
 ---
 
@@ -109,9 +109,8 @@ app/
     environments.py          # Env config + data/cache paths
     settings.py              # Global universe, timezones
   loaders/
-    # git_fetch.py removed - strategies now uploaded via web interface
     strategy_loader.py       # Dynamic import + I/O smoke test + schema check
-    static_check.py         # Security validation (import blacklisting, syntax checking)
+    static_check.py          # Security validation (import blacklisting, syntax checking)
   models/
     teams.py                 # Team, Portfolio, Position models
     ticker_data.py           # MinuteBar etc.
@@ -129,28 +128,32 @@ app/
     logging_config.py        # Logging bootstrap + handler reset
   main.py                    # Single entrypoint (CLI) + orchestrator
 
-strategy_starter/
-  README.md                  # Strategy quickstart
+docs/                        # Documentation
+  api/                       # API reference docs
+  guides/                    # User guides (trader handbook, etc.)
+  implementation/            # Implementation details
+  internal/                  # Internal documentation
+
+examples/                    # Example strategies
+  example_strat.py           # Demo strategy
+
+scripts/                     # Utility scripts
+  run_strategies.py          # Strategy runner
+  generate_sp500_universe.py # Universe generation
+  TickerUniverseScript.py    # Ticker utilities
+  debug_alpaca_data.py       # Alpaca debugging
+  simple_alpaca_test.py      # Alpaca testing
+
+starter_kit/                 # Strategy quickstart template
   strategy.py                # Minimal skeleton
-  tests/test_strategy.py     # Sanity test for shape
 
-data/                        # Runtime data (created at run-time or seeded for mocks)
-  api_keys.json              # { team_id: key }
-  team/<team_id>/
-    trades.jsonl
-    portfolio/
-      YYYY-MM-DD.jsonl       # Per-minute snapshots for the day
-      portfolio.parquet      # Folded history (daily JSONL ? Parquet)
-    metrics.jsonl            # Per-minute metrics
-  qtc-alpha/
-    metrics.jsonl
-    portfolio/
-      YYYY-MM-DD.jsonl
-      portfolio.parquet
+tests/                       # Test files
+  fixtures/                  # Test fixtures
 
-external_strategies/         # Synced strategy repos (from team_registry.yaml)
-team_registry.yaml           # Team Git URLs + entry points (optional)
+data/                        # Runtime data (gitignored)
+external_strategies/         # Uploaded strategies (gitignored)
 requirements.txt             # Python deps
+pyproject.toml               # Project configuration
 README.md                    # This file
 ```
 

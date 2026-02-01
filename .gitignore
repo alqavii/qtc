@@ -1,19 +1,61 @@
-.vscode
-.venv
-venv
-__pycache__
-__init__.py
-qtc-quant-frontend
+# IDE
+.vscode/
+.idea/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Runtime data
 data/
+cache/
 .cache/
+
+# Logs
+*.log
+logs/
+
+# Data files
+*.parquet
+*.jsonl
+
+# Environment and secrets
+.env
+.env.local
+*.backup
+
+# Project-specific
 external_strategies/
 app/strats/
-*.parquet
-*.log
-.strategy_starter
+.strategy_starter/
 risk/
 settings.py
 .strategy_sync_state.json
 team_registry.yaml
-*tmpclaude*-cwd
 
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*tmpclaude*-cwd
+*.tmp
+*.temp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Claude/AI
+.claude/
+
+# Frontend (separate repo)
+qtc-quant-frontend/
