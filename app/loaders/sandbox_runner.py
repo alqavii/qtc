@@ -84,6 +84,8 @@ def load_strategy(strategy_path: str, entry_point: str):
 
 def main():
     """Main entry point for sandbox execution."""
+    import io
+    
     try:
         # Read input from stdin
         input_text = sys.stdin.read()
@@ -97,20 +99,34 @@ def main():
         memory_mb = data.get("memory_mb", 256)
         set_resource_limits(memory_mb)
         
-        # Load the strategy
-        strategy = load_strategy(
-            data["strategy_path"],
-            data["entry_point"],
-        )
+        # Capture stdout from strategy
+        captured_stdout = io.StringIO()
+        original_stdout = sys.stdout
         
-        # Execute the strategy
-        result = strategy.generate_signal(
-            data["team"],
-            data["bars"],
-            data["prices"],
-        )
+        try:
+            # Redirect stdout to capture strategy's print() calls
+            sys.stdout = captured_stdout
+            
+            # Load the strategy
+            strategy = load_strategy(
+                data["strategy_path"],
+                data["entry_point"],
+            )
+            
+            # Execute the strategy
+            result = strategy.generate_signal(
+                data["team"],
+                data["bars"],
+                data["prices"],
+            )
+        finally:
+            # Restore stdout
+            sys.stdout = original_stdout
         
-        # Output result as JSON
+        # Get captured output
+        strategy_output = captured_stdout.getvalue()
+        
+        # Output result as JSON, followed by captured logs
         if result is None:
             print("null")
         else:
@@ -125,6 +141,11 @@ def main():
                 return obj
             
             print(json.dumps(convert_decimals(result)))
+        
+        # Append captured logs with separator
+        if strategy_output:
+            print("---LOGS---")
+            print(strategy_output, end="")
             
     except Exception as e:
         # Write error to stderr

@@ -25,6 +25,20 @@ DEFAULT_MEMORY_MB = 256
 RUNNER_SCRIPT = Path(__file__).parent / "sandbox_runner.py"
 
 
+class SandboxResult:
+    """Result from sandboxed strategy execution."""
+    
+    def __init__(
+        self,
+        signal: Optional[Dict[str, Any]],
+        stdout: str = "",
+        stderr: str = "",
+    ):
+        self.signal = signal
+        self.stdout = stdout  # Strategy's print() output
+        self.stderr = stderr  # Strategy's error output
+
+
 def run_strategy_sandboxed(
     strategy_path: str,
     entry_point: str,
@@ -33,7 +47,7 @@ def run_strategy_sandboxed(
     prices: Dict[str, float],
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     memory_mb: int = DEFAULT_MEMORY_MB,
-) -> Optional[Dict[str, Any]]:
+) -> SandboxResult:
     """
     Execute a strategy in an isolated subprocess with resource limits.
     
@@ -47,7 +61,7 @@ def run_strategy_sandboxed(
         memory_mb: Maximum memory usage in MB
     
     Returns:
-        Signal dict if strategy returns a trade signal, None otherwise
+        SandboxResult with signal (or None) and captured stdout/stderr
     
     Raises:
         TimeoutError: If strategy exceeds time limit
@@ -81,21 +95,33 @@ def run_strategy_sandboxed(
             },
         )
         
+        # Capture stderr (strategy logs or errors)
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
         if result.returncode != 0:
-            error_msg = result.stderr.strip() or "Unknown error"
+            error_msg = stderr_output or "Unknown error"
             logger.warning(f"Sandbox execution failed: {error_msg}")
             raise RuntimeError(f"Strategy execution failed: {error_msg}")
         
-        # Parse output
-        output = result.stdout.strip()
-        if not output or output == "null":
-            return None
+        # Parse output - format is now: JSON_SIGNAL\n---LOGS---\nstdout_content
+        stdout_raw = result.stdout
+        signal = None
+        stdout_logs = ""
         
-        try:
-            signal = json.loads(output)
-            return signal
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Invalid JSON output from strategy: {e}")
+        if "---LOGS---" in stdout_raw:
+            parts = stdout_raw.split("---LOGS---", 1)
+            signal_part = parts[0].strip()
+            stdout_logs = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            signal_part = stdout_raw.strip()
+        
+        if signal_part and signal_part != "null":
+            try:
+                signal = json.loads(signal_part)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"Invalid JSON output from strategy: {e}")
+        
+        return SandboxResult(signal=signal, stdout=stdout_logs, stderr=stderr_output)
             
     except subprocess.TimeoutExpired:
         raise TimeoutError(f"Strategy exceeded {timeout}s time limit")
@@ -121,6 +147,9 @@ class SandboxedStrategy:
         self.timeout = timeout
         self.memory_mb = memory_mb
         self._class_name = entry_point.split(":")[-1] if ":" in entry_point else "Strategy"
+        # Last execution's captured output
+        self.last_stdout: str = ""
+        self.last_stderr: str = ""
     
     @property
     def __class__(self):
@@ -140,8 +169,9 @@ class SandboxedStrategy:
         Execute the strategy in a sandbox and return the signal.
         
         Matches the _StrategyProtocol interface.
+        Captured stdout/stderr available via last_stdout/last_stderr after call.
         """
-        return run_strategy_sandboxed(
+        result = run_strategy_sandboxed(
             strategy_path=self.strategy_path,
             entry_point=self.entry_point,
             team_data=team,
@@ -150,3 +180,7 @@ class SandboxedStrategy:
             timeout=self.timeout,
             memory_mb=self.memory_mb,
         )
+        # Store captured output for logging
+        self.last_stdout = result.stdout
+        self.last_stderr = result.stderr
+        return result.signal

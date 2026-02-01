@@ -196,6 +196,82 @@ def test_load_strategy_with_sandbox_param():
     print("✓ test_load_strategy_with_sandbox_param passed")
 
 
+def test_static_check_scans_all_files():
+    """Test that static check scans all .py files in directory."""
+    from app.loaders.static_check import ast_sanity_check
+    import tempfile
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Create a valid strategy file
+        strategy = temp_path / "strategy.py"
+        strategy.write_text("""
+class Strategy:
+    def generate_signal(self, team, bars, prices):
+        return None
+""")
+        
+        # Create a helper with blacklisted import
+        helper = temp_path / "helper.py"
+        helper.write_text("import os\n")
+        
+        # Should fail because helper.py has blacklisted import
+        try:
+            ast_sanity_check(temp_path, entry_point="strategy:Strategy")
+            assert False, "Should have raised RuntimeError for blacklisted import"
+        except RuntimeError as e:
+            assert "Blacklisted import: os" in str(e)
+    
+    print("✓ test_static_check_scans_all_files passed")
+
+
+def test_static_check_verifies_class_exists():
+    """Test that static check verifies Strategy class with generate_signal."""
+    from app.loaders.static_check import ast_sanity_check
+    import tempfile
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Create file without Strategy class
+        strategy = temp_path / "strategy.py"
+        strategy.write_text("x = 1\n")
+        
+        try:
+            ast_sanity_check(temp_path, entry_point="strategy:Strategy")
+            assert False, "Should have raised RuntimeError for missing class"
+        except RuntimeError as e:
+            assert "Class 'Strategy' not found" in str(e)
+    
+    print("✓ test_static_check_verifies_class_exists passed")
+
+
+def test_static_check_verifies_generate_signal():
+    """Test that static check verifies generate_signal method exists."""
+    from app.loaders.static_check import ast_sanity_check
+    import tempfile
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Create file with class but no generate_signal
+        strategy = temp_path / "strategy.py"
+        strategy.write_text("""
+class Strategy:
+    def __init__(self):
+        pass
+""")
+        
+        try:
+            ast_sanity_check(temp_path, entry_point="strategy:Strategy")
+            assert False, "Should have raised RuntimeError for missing method"
+        except RuntimeError as e:
+            assert "missing 'generate_signal'" in str(e)
+    
+    print("✓ test_static_check_verifies_generate_signal passed")
+
+
 def run_all_tests():
     """Run all tests and report results."""
     tests = [
@@ -210,6 +286,10 @@ def run_all_tests():
         test_sandboxed_strategy_returns_none,
         test_sandboxed_strategy_validates,
         test_load_strategy_with_sandbox_param,
+        # Static check tests
+        test_static_check_scans_all_files,
+        test_static_check_verifies_class_exists,
+        test_static_check_verifies_generate_signal,
     ]
     
     passed = 0
