@@ -117,19 +117,50 @@ def _scan_file(py: Path, blacklist: Set[str]) -> None:
                 raise RuntimeError(f"Disallowed builtin call '{fn.id}' in {py}")
 
 
+def _verify_class_exists(py: Path, class_name: str) -> None:
+    """Verify that a class with the given name exists in the file."""
+    code = py.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        raise RuntimeError(f"Syntax error in {py}: {e}") from e
+    
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            # Check for generate_signal method
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "generate_signal":
+                    return
+            raise RuntimeError(
+                f"Class '{class_name}' in {py} missing 'generate_signal' method"
+            )
+    
+    raise RuntimeError(f"Class '{class_name}' not found in {py}")
+
+
 def ast_sanity_check(
     repo_dir: Path, entry_point: Optional[str] = None, blacklist: Set[str] = BLACKLISTED_IMPORTS
 ) -> None:
-    """Scan for blacklisted imports; if entry_point is provided, only scan that file."""
+    """
+    Scan all .py files for blacklisted imports.
+    
+    If entry_point is provided, also verify the Strategy class exists.
+    Always scans ALL .py files in the directory (not just entry file).
+    """
+    # Always scan all Python files in the directory
+    py_files = list(repo_dir.rglob("*.py"))
+    if not py_files:
+        raise RuntimeError(f"No Python files found in {repo_dir}")
+    
+    for py in py_files:
+        _scan_file(py, blacklist)
+    
+    # If entry point specified, verify the class exists
     if entry_point:
-        file_name = entry_point.split(":")[0]
+        file_name, class_name = entry_point.split(":")
         target = repo_dir / f"{file_name}.py"
         if not target.exists():
             raise RuntimeError(
                 f"Entry file {target} not found for entry_point '{entry_point}'"
             )
-        _scan_file(target, blacklist)
-        return
-
-    for py in repo_dir.rglob("*.py"):
-        _scan_file(py, blacklist)
+        _verify_class_exists(target, class_name)

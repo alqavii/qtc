@@ -57,5 +57,8 @@ htmlcov/
 # Claude/AI
 .claude/
 
+# Local dev notes
+.improvement-ideas.md
+
 # Frontend (separate repo)
 qtc-quant-frontend/
