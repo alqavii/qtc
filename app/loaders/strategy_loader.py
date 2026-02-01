@@ -1,7 +1,13 @@
 import importlib.util
+import os
 from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable, cast
 from app.models.trading import StrategySignal
+
+
+# Environment variable to enable sandboxing
+# Set QTC_SANDBOX=1 to enable subprocess isolation for strategies
+SANDBOX_ENABLED = os.getenv("QTC_SANDBOX", "0") == "1"
 
 
 @runtime_checkable
@@ -26,11 +32,18 @@ def _load_class_from_file(module_file: Path, class_name: str) -> type[Any]:
 
 
 def load_strategy_from_folder(
-    folder: Path | str, entry_point: str
+    folder: Path | str, entry_point: str, sandbox: Optional[bool] = None
 ) -> _StrategyProtocol:
     """
-    folder: path to team repo folder
-    entry_point: 'file_without_py:ClassName' e.g. 'strategy:MeanRevStrategy'
+    Load a strategy from a folder.
+    
+    Args:
+        folder: Path to team repo folder
+        entry_point: 'file_without_py:ClassName' e.g. 'strategy:MeanRevStrategy'
+        sandbox: Override sandbox setting (None = use QTC_SANDBOX env var)
+    
+    Returns:
+        Strategy object implementing generate_signal()
     """
     folder = Path(folder)
     file_name, class_name = entry_point.split(":")
@@ -38,12 +51,25 @@ def load_strategy_from_folder(
     if not module_file.exists():
         raise FileNotFoundError(f"{module_file} not found in {folder}")
 
-    StrategyCls = _load_class_from_file(module_file, class_name)
-    strategy: _StrategyProtocol = cast(_StrategyProtocol, StrategyCls())
-
-    _io_test_strategy(strategy)
-
-    return strategy
+    # Determine if sandboxing is enabled
+    use_sandbox = sandbox if sandbox is not None else SANDBOX_ENABLED
+    
+    if use_sandbox:
+        # Use sandboxed execution
+        from app.loaders.sandbox import SandboxedStrategy
+        strategy: _StrategyProtocol = cast(
+            _StrategyProtocol,
+            SandboxedStrategy(str(folder), entry_point)
+        )
+        # Test the sandboxed strategy
+        _io_test_strategy(strategy)
+        return strategy
+    else:
+        # Use in-process execution (original behavior)
+        StrategyCls = _load_class_from_file(module_file, class_name)
+        strategy = cast(_StrategyProtocol, StrategyCls())
+        _io_test_strategy(strategy)
+        return strategy
 
 
 def get_default_empty_strategy() -> _StrategyProtocol:
